@@ -1,0 +1,15 @@
+[package]
+name = "ws-proto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+bytes = { workspace = true }
+fastrand = { workspace = true }
+http = "1"

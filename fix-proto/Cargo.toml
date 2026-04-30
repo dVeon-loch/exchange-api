@@ -1,0 +1,11 @@
+[package]
+name = "fix-proto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
