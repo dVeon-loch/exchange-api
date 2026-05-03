@@ -100,8 +100,10 @@ impl WsStream {
                     match msg {
                         Some(Ok(TungsteniteMsg::Close(_))) => return Ok(None),
                         Some(Ok(TungsteniteMsg::Ping(data))) => {
-                            return Ok(Some(WsMessage::Ping(data.to_vec())));
+                            self.inner.send(TungsteniteMsg::Pong(data)).await?;
+                            continue;
                         }
+                        Some(Ok(TungsteniteMsg::Pong(_))) => continue,
                         Some(Ok(other)) => return Ok(Some(other.into())),
                         Some(Err(e)) => return Err(e.into()),
                         None => return Ok(None),
