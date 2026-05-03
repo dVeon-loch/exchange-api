@@ -26,4 +26,7 @@ pub enum Error {
 
     #[error("Io error: {0}")]
     Io(#[from] io::Error),
+
+    #[error("Thread join error: {0}")]
+    ThreadJoin(#[from] tokio::task::JoinError),
 }

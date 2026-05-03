@@ -57,22 +57,22 @@ impl FileOutput {
         // Spawn writer task that buffers and flushes every 100ms
         let writer_handle = tokio::spawn(async move {
             let f = File::create("exchange_data.txt").await?;
-            let buf = BufWriter::new(f);
-            let mut writer = LinesCodec::new_with_max_length(256).framed(buf);
+            let mut file = BufWriter::new(f);
 
             let mut rx = rx;
-            let mut flush_interval = interval(Duration::from_millis(100));
+            static FLUSH_INTERVAL_MILLIS: u64 = 200;
+            let mut flush_interval = interval(Duration::from_millis(FLUSH_INTERVAL_MILLIS));
 
             loop {
                 tokio::select! {
                     Some(data) = rx.recv() => {
-                        if let Err(e) = writer.feed(data).await {
+                        if let Err(e) = file.write_all(data.as_bytes()).await {
                             tracing::error!(error=%e, "Error writing to file");
                             break;
                         }
                     }
                     _ = flush_interval.tick() => {
-                        if let Err(e) = writer.flush().await {
+                        if let Err(e) = file.flush().await {
                             tracing::error!(error=%e, "Error flushing buffered writer");
                         }
                     }
@@ -87,7 +87,7 @@ impl FileOutput {
         while let Some(result) = StreamExt::next(&mut stream).await {
             match result {
                 Ok(data) => {
-                    if let Err(e) = tx.send(data) {
+                    if let Err(e) = tx.send(data).await {
                         tracing::error!(error=%e, "Writer task died");
                         break;
                     }
@@ -100,7 +100,7 @@ impl FileOutput {
 
         // Flush final writes
         drop(tx);
-        writer_handle.await??;
+        writer_handle.await?;
 
         Ok(())
     }
