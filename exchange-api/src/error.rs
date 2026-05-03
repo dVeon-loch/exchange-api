@@ -1,4 +1,5 @@
 use thiserror::Error;
+use tokio::io;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -22,4 +23,7 @@ pub enum Error {
 
     #[error("Transport error: {0}")]
     Transport(String),
+
+    #[error("Io error: {0}")]
+    Io(#[from] io::Error),
 }

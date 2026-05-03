@@ -1,17 +1,8 @@
-use crate::output;
+use crate::output::{self, OutputConfig};
 use crate::traits::Exchange;
 use crate::types::StreamKind;
 
-/// Configuration for an output sink.
-/// Will need better abstraction when there are more than two outputs.
-#[derive(Clone)]
-#[non_exhaustive]
-pub struct OutputConfig {
-    #[cfg(feature = "kafka")]
-    pub kafka: Option<output::kafka::KafkaConfig>,
-    #[cfg(feature = "redis")]
-    pub redis: Option<output::redis::RedisConfig>,
-}
+
 
 /// Builds an [`ExchangeApi`] instance via a fluent API.
 pub struct ExchangeApiBuilder {
@@ -32,6 +23,7 @@ impl ExchangeApiBuilder {
                 kafka: None,
                 #[cfg(feature = "redis")]
                 redis: None,
+                file: None,
             },
         }
     }
