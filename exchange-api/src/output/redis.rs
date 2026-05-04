@@ -26,7 +26,6 @@ impl Default for RedisConfig {
 }
 
 pub struct RedisOutput {
-    pub client: fred::clients::Client,
     pub recv_handle: JoinHandle<Result<(), crate::Error>>,
 }
 
@@ -58,11 +57,9 @@ impl RedisOutput {
             Ok(())
         });
 
-        let recv_client = client.clone();
         Ok(Self {
-            client,
             recv_handle: tokio::spawn(async move {
-                Self::start_recv(recv_client, BroadcastStream::new(broadcast_recv), config).await
+                Self::start_recv(client, BroadcastStream::new(broadcast_recv), config).await
             }),
         })
     }

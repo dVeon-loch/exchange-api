@@ -56,7 +56,17 @@ impl ExchangeApi {
 
             let (tx, rx) = broadcast::channel(100);
             // let _kafka_output = if let Some(config) = self.output.kafka {todo!()} else {None};
-            // let _redis_output = if let Some(config) = self.output.redis {todo!()} else {None};
+
+            #[cfg(feature = "redis")]
+            if let Some(config) = &self.output.redis {
+                use crate::output::redis::RedisOutput;
+                handles.push(
+                    RedisOutput::with_config(rx.resubscribe(), config.clone())
+                        .await?
+                        .recv_handle,
+                )
+            }
+
             if let Some(config) = &self.output.file {
                 handles.push(FileOutput::new(config, rx.resubscribe()).recv_handle);
             }
@@ -70,7 +80,8 @@ impl ExchangeApi {
                 let mut client = WsClient::connect(config).await?;
 
                 let outputs_sink = OutputsSink::new(tx);
-                let mut last_emitted: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+                let mut last_emitted: std::collections::HashMap<String, std::time::Instant> =
+                    std::collections::HashMap::new();
 
                 while let Some(msg) = client.recv().await? {
                     let text = match msg {
@@ -90,7 +101,8 @@ impl ExchangeApi {
                                 crate::StreamData::Ticker(_) => "Ticker",
                             };
 
-                            last_emitted.get(stream_key)
+                            last_emitted
+                                .get(stream_key)
                                 .map_or(true, |t| t.elapsed() >= rate.duration)
                         });
 
@@ -101,7 +113,8 @@ impl ExchangeApi {
                                     crate::StreamData::OrderBook(_) => "OrderBook",
                                     crate::StreamData::Ticker(_) => "Ticker",
                                 };
-                                last_emitted.insert(stream_key.to_string(), std::time::Instant::now());
+                                last_emitted
+                                    .insert(stream_key.to_string(), std::time::Instant::now());
                             }
 
                             match outputs_sink.route_to_sinks(data) {
@@ -109,7 +122,9 @@ impl ExchangeApi {
                                     output_count = count,
                                     "Successfully routed data to outputs"
                                 ),
-                                Err(err) => tracing::error!(error=%err,"Error routing data to outputs"),
+                                Err(err) => {
+                                    tracing::error!(error=%err,"Error routing data to outputs")
+                                }
                             }
                         }
                     }
