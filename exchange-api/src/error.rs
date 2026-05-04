@@ -15,8 +15,9 @@ pub enum Error {
     #[error("Kafka error: {0}")]
     Kafka(String),
 
+    #[cfg(feature = "redis")]
     #[error("Redis error: {0}")]
-    Redis(String),
+    Redis(#[from] fred::error::Error),
 
     #[error("Configuration error: {0}")]
     Config(String),

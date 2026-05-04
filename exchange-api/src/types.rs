@@ -130,6 +130,14 @@ impl StreamData {
             }
         }
     }
+
+    pub fn metadata(&self) -> (&str, &str, &str) {
+        match self {
+            StreamData::Trade(t) => (&t.exchange, &t.symbol, "trade"),
+            StreamData::OrderBook(o) => (&o.exchange, &o.symbol, "orderbook"),
+            StreamData::Ticker(t) => (&t.exchange, &t.symbol, "ticker"),
+        }
+    }
 }
 
 /// Unified symbol list retrieved from exchanges periodically
