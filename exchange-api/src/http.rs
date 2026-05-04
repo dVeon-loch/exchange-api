@@ -234,10 +234,7 @@ impl ReqwestBackend {
 }
 
 impl HttpBackend for ReqwestBackend {
-    async fn send_raw(
-        &self,
-        request: RawHttpRequest,
-    ) -> Result<RawHttpResponse, crate::Error> {
+    async fn send_raw(&self, request: RawHttpRequest) -> Result<RawHttpResponse, crate::Error> {
         let mut req = match request.method {
             HttpMethod::Get => self.inner.get(&request.url),
             HttpMethod::Post => self.inner.post(&request.url),

@@ -64,19 +64,17 @@ where
     loop {
         match operation(reconnect.attempt()).await {
             Ok(value) => return Ok(value),
-            Err(e) => {
-                match reconnect.next_delay() {
-                    Some(delay) => {
-                        info!(
-                            attempt = reconnect.attempt(),
-                            delay_ms = delay.as_millis(),
-                            "connection failed, retrying: {e}"
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
-                    None => return Err(e),
+            Err(e) => match reconnect.next_delay() {
+                Some(delay) => {
+                    info!(
+                        attempt = reconnect.attempt(),
+                        delay_ms = delay.as_millis(),
+                        "connection failed, retrying: {e}"
+                    );
+                    tokio::time::sleep(delay).await;
                 }
-            }
+                None => return Err(e),
+            },
         }
     }
 }

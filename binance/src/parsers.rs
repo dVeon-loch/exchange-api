@@ -1,7 +1,10 @@
+use chrono::DateTime;
+use exchange_api::Ticker;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::fmt;
+use std::num::ParseFloatError;
 
 /// Combined stream wrapper from Binance WebSocket.
 ///
@@ -22,23 +25,13 @@ impl CombinedStreamRaw {
     pub fn parse(&self) -> Result<CombinedStreamEvent<'_>, exchange_api::Error> {
         let data = self.data.get();
         if self.stream.contains("@ticker") {
-            Ok(
-                CombinedStreamEvent::Ticker(
-                    serde_json::from_str(data)?,
-                ),
-            )
+            Ok(CombinedStreamEvent::Ticker(serde_json::from_str(data)?))
         } else if self.stream.contains("@trade") {
-            Ok(
-                CombinedStreamEvent::Trade(
-                    serde_json::from_str(data)?,
-                ),
-            )
+            Ok(CombinedStreamEvent::Trade(serde_json::from_str(data)?))
         } else if self.stream.contains("@depth") {
-            Ok(
-                CombinedStreamEvent::OrderBook(
-                    serde_json::from_str(data)?,
-                ),
-            )
+            let mut payload: DepthUpdatePayload = serde_json::from_str(data)?;
+            payload.symbol = payload.stream_symbol.to_string();
+            Ok(CombinedStreamEvent::DepthUpdate(payload))
         } else {
             Err(exchange_api::Error::Config(format!(
                 "unknown stream type: {}",
@@ -55,7 +48,7 @@ impl CombinedStreamRaw {
 pub enum CombinedStreamEvent<'a> {
     Ticker(TickerPayload<'a>),
     Trade(TradePayload<'a>),
-    OrderBook(OrderBookPayload<'a>),
+    DepthUpdate(DepthUpdatePayload<'a>),
 }
 
 // Stream name: <symbol>@ticker
@@ -111,6 +104,41 @@ pub struct TickerPayload<'a> {
     pub total_trades: i64,
 }
 
+impl TryInto<exchange_api::Ticker> for TickerPayload<'_> {
+    type Error = exchange_api::Error;
+
+    fn try_into(self) -> Result<exchange_api::Ticker, Self::Error> {
+        Ok(exchange_api::Ticker {
+            exchange: "binance".to_string(),
+            symbol: self.symbol.to_string(),
+            last_price: self
+                .last_price
+                .parse::<f64>()
+                .map_err(|err| parse_float_error("last_price", err))?,
+            timestamp: DateTime::from_timestamp_millis(self.event_time).ok_or_else(|| {
+                exchange_api::Error::Exchange(
+                    "could not parse Binance returned event_time as valid DateTime<Utc>"
+                        .to_string(),
+                )
+            })?,
+        })
+    }
+}
+
+// impl TryFrom<TickerPayload<'_>> for exchange_api::Ticker {
+//     type Error = exchange_api::Error;
+
+//     fn try_from(value: TickerPayload<'_>) -> Result<Self, Self::Error> {
+//         value.try_into()
+//     }
+// }
+
+fn parse_float_error(field: &'static str, error: ParseFloatError) -> exchange_api::Error {
+    exchange_api::Error::Exchange(format!(
+        "could not parse Binance returned {field} as valid f64. Error: {error}"
+    ))
+}
+
 // Stream name: <symbol>@trade
 
 #[allow(dead_code)]
@@ -136,7 +164,49 @@ pub struct TradePayload<'a> {
     pub ignore: bool,
 }
 
-// Stream name: <symbol>@depth<levels>@100ms
+/// `"m": true` means the buyer is the market maker (passive), so the aggressor
+/// was the seller — `Side::Sell`. `"m": false` means the seller was passive and
+/// the buyer took the price — `Side::Buy`. Always the taker's perspective.
+impl TryInto<exchange_api::Trade> for TradePayload<'_> {
+    type Error = exchange_api::Error;
+
+    fn try_into(self) -> Result<exchange_api::Trade, Self::Error> {
+        Ok(exchange_api::Trade {
+            exchange: "binance".to_string(),
+            symbol: self.symbol.to_string(),
+            price: self
+                .price
+                .parse::<f64>()
+                .map_err(|err| parse_float_error("price", err))?,
+            size: self
+                .quantity
+                .parse::<f64>()
+                .map_err(|err| parse_float_error("quantity", err))?,
+            side: if self.is_buyer_market_maker {
+                exchange_api::Side::Sell
+            } else {
+                exchange_api::Side::Buy
+            },
+            trade_id: self.trade_id.to_string(),
+            timestamp: DateTime::from_timestamp_millis(self.event_time).ok_or_else(|| {
+                exchange_api::Error::Exchange(
+                    "could not parse Binance returned event_time as valid DateTime<Utc>"
+                        .to_string(),
+                )
+            })?,
+        })
+    }
+}
+
+// impl TryFrom<TradePayload<'_>> for exchange_api::Trade {
+//     type Error = exchange_api::Error;
+
+//     fn try_from(value: TradePayload<'_>) -> Result<Self, Self::Error> {
+//         value.try_into()
+//     }
+// }
+
+// Stream name: <symbol>@depth OR <symbol>@depth@100ms
 
 /// A single price level — deserialized from a JSON array `[price, quantity]`.
 #[allow(dead_code)]
@@ -148,13 +218,67 @@ pub struct PriceLevel<'a>(
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-pub struct OrderBookPayload<'a> {
-    #[serde(rename = "lastUpdateId")]
-    pub last_update_id: i64,
-    #[serde(borrow)]
+pub struct DepthUpdatePayload<'a> {
+    #[serde(skip)]
+    pub symbol: String,
+    #[serde(rename = "E")]
+    pub event_time: i64,
+    #[serde(rename = "s", borrow)]
+    pub stream_symbol: Cow<'a, str>,
+    #[serde(rename = "U")]
+    pub first_update_id: i64,
+    #[serde(rename = "u")]
+    pub final_update_id: i64,
+    #[serde(rename = "b", borrow)]
     pub bids: Vec<PriceLevel<'a>>,
-    #[serde(borrow)]
+    #[serde(rename = "a", borrow)]
     pub asks: Vec<PriceLevel<'a>>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct ExchangeInfoPayload<'a> {
+    #[serde(borrow)]
+    pub timezone: Cow<'a, str>,
+    #[serde(rename = "serverTime")]
+    pub timestamp: i64,
+    #[serde(borrow)]
+    pub symbols: Vec<SymbolPayload<'a>>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct SymbolPayload<'a> {
+    #[serde(borrow)]
+    pub symbol: Cow<'a, str>,
+    #[serde(rename = "baseAsset", borrow)]
+    pub base_asset: Cow<'a, str>,
+    #[serde(rename = "quoteAsset", borrow)]
+    pub quote_asset: Cow<'a, str>,
+    #[serde(rename = "baseAssetPrecision")]
+    pub base_precision: i64,
+    #[serde(rename = "quoteAssetPrecision")]
+    pub quote_precision: i64,
+}
+
+impl Into<exchange_api::SymbolList> for ExchangeInfoPayload<'_> {
+    fn into(self) -> exchange_api::SymbolList {
+        exchange_api::SymbolList {
+            exchange: "binance".to_string(),
+            updated_at: DateTime::from_timestamp_millis(self.timestamp).unwrap_or_default(), // TODO: Take timezone into account?
+            symbols: self.symbols.into_iter().map(SymbolPayload::into).collect(),
+        }
+    }
+}
+
+impl Into<exchange_api::Symbol> for SymbolPayload<'_> {
+    fn into(self) -> exchange_api::Symbol {
+        exchange_api::Symbol {
+            symbol: self.symbol.to_string(),
+            base: self.base_asset.to_string(),
+            quote: self.quote_asset.to_string(),
+        }
+    }
 }
 
 // Returned when a SUBSCRIBE/UNSUBSCRIBE/etc. command receives an error.
@@ -188,19 +312,20 @@ impl<'a> WsErrorPayload<'a> {
                 } else if self.msg.contains("too many parameters") {
                     WsError::TooManyParameters
                 } else if self.msg.contains("missing field") {
-                    let field = self
-                        .msg
-                        .split('`')
-                        .nth(1)
-                        .unwrap_or("?")
-                        .to_string();
+                    let field = self.msg.split('`').nth(1).unwrap_or("?").to_string();
                     WsError::MissingField(field)
                 } else {
-                    WsError::Unknown { code: 2, msg: self.msg.to_string() }
+                    WsError::Unknown {
+                        code: 2,
+                        msg: self.msg.to_string(),
+                    }
                 }
             }
             3 => WsError::InvalidJson,
-            code => WsError::Unknown { code, msg: self.msg.to_string() },
+            code => WsError::Unknown {
+                code,
+                msg: self.msg.to_string(),
+            },
         }
     }
 }
@@ -308,7 +433,10 @@ mod tests {
             match cow {
                 Cow::Borrowed(s) => {
                     let ptr = s.as_ptr() as usize;
-                    assert!(ptr >= base && ptr < limit, "{label} ptr {ptr:#x} outside [{base:#x}, {limit:#x})");
+                    assert!(
+                        ptr >= base && ptr < limit,
+                        "{label} ptr {ptr:#x} outside [{base:#x}, {limit:#x})"
+                    );
                 }
                 _ => panic!("{label} was not borrowed"),
             }
@@ -350,7 +478,8 @@ mod tests {
 
     #[test]
     fn trade_m_is_buyer_market_maker() {
-        let json = r#"{"e":"trade","E":1,"s":"BTCUSDT","t":1,"p":"1","q":"1","T":1,"m":false,"M":false}"#;
+        let json =
+            r#"{"e":"trade","E":1,"s":"BTCUSDT","t":1,"p":"1","q":"1","T":1,"m":false,"M":false}"#;
         let p: TradePayload = serde_json::from_str(json).unwrap();
         assert!(!p.is_buyer_market_maker);
     }
@@ -366,14 +495,20 @@ mod tests {
         match &p.price {
             Cow::Borrowed(s) => {
                 let ptr = s.as_ptr() as usize;
-                assert!(ptr >= base && ptr < limit, "price ptr {ptr:#x} outside range");
+                assert!(
+                    ptr >= base && ptr < limit,
+                    "price ptr {ptr:#x} outside range"
+                );
             }
             _ => panic!("price was not borrowed"),
         }
         match &p.quantity {
             Cow::Borrowed(s) => {
                 let ptr = s.as_ptr() as usize;
-                assert!(ptr >= base && ptr < limit, "quantity ptr {ptr:#x} outside range");
+                assert!(
+                    ptr >= base && ptr < limit,
+                    "quantity ptr {ptr:#x} outside range"
+                );
             }
             _ => panic!("quantity was not borrowed"),
         }
@@ -424,16 +559,20 @@ mod tests {
             match cow0 {
                 Cow::Borrowed(s) => {
                     let ptr = s.as_ptr() as usize;
-                    assert!(ptr >= base && ptr < limit,
-                        "bids[{i}].0 ptr {ptr:#x} outside range");
+                    assert!(
+                        ptr >= base && ptr < limit,
+                        "bids[{i}].0 ptr {ptr:#x} outside range"
+                    );
                 }
                 _ => panic!("bids[{i}].0 was not borrowed"),
             }
             match cow1 {
                 Cow::Borrowed(s) => {
                     let ptr = s.as_ptr() as usize;
-                    assert!(ptr >= base && ptr < limit,
-                        "bids[{i}].1 ptr {ptr:#x} outside range");
+                    assert!(
+                        ptr >= base && ptr < limit,
+                        "bids[{i}].1 ptr {ptr:#x} outside range"
+                    );
                 }
                 _ => panic!("bids[{i}].1 was not borrowed"),
             }
@@ -442,19 +581,28 @@ mod tests {
 
     #[test]
     fn error_code_0_unknown_property() {
-        let payload = WsErrorPayload { code: 0, msg: "Unknown property" };
+        let payload = WsErrorPayload {
+            code: 0,
+            msg: "Unknown property",
+        };
         assert_eq!(payload.classify(), WsError::UnknownProperty);
     }
 
     #[test]
     fn error_code_1_invalid_value_type() {
-        let payload = WsErrorPayload { code: 1, msg: "Invalid value type: expected Boolean" };
+        let payload = WsErrorPayload {
+            code: 1,
+            msg: "Invalid value type: expected Boolean",
+        };
         assert_eq!(payload.classify(), WsError::InvalidValueType);
     }
 
     #[test]
     fn error_code_3_invalid_json() {
-        let payload = WsErrorPayload { code: 3, msg: "Invalid JSON: expected value at line 1 column 28" };
+        let payload = WsErrorPayload {
+            code: 3,
+            msg: "Invalid JSON: expected value at line 1 column 28",
+        };
         assert_eq!(payload.classify(), WsError::InvalidJson);
     }
 
@@ -467,7 +615,8 @@ mod tests {
 
     #[test]
     fn error_code_2_invalid_request_id() {
-        let json = r#"{"code":2,"msg":"Invalid request: request ID must be an unsigned integer","id":1}"#;
+        let json =
+            r#"{"code":2,"msg":"Invalid request: request ID must be an unsigned integer","id":1}"#;
         let payload: WsErrorPayload = serde_json::from_str(json).unwrap();
         assert_eq!(payload.classify(), WsError::InvalidRequestId);
     }
@@ -502,23 +651,50 @@ mod tests {
 
     #[test]
     fn error_code_2_unrecognized_msg_returns_unknown() {
-        let payload = WsErrorPayload { code: 2, msg: "some weird error" };
+        let payload = WsErrorPayload {
+            code: 2,
+            msg: "some weird error",
+        };
         let err = payload.classify();
-        assert_eq!(err, WsError::Unknown { code: 2, msg: "some weird error".into() });
+        assert_eq!(
+            err,
+            WsError::Unknown {
+                code: 2,
+                msg: "some weird error".into()
+            }
+        );
     }
 
     #[test]
     fn error_unknown_code() {
-        let payload = WsErrorPayload { code: 99, msg: "custom error" };
+        let payload = WsErrorPayload {
+            code: 99,
+            msg: "custom error",
+        };
         let err = payload.classify();
-        assert_eq!(err, WsError::Unknown { code: 99, msg: "custom error".into() });
+        assert_eq!(
+            err,
+            WsError::Unknown {
+                code: 99,
+                msg: "custom error".into()
+            }
+        );
     }
 
     #[test]
     fn error_negative_code() {
-        let payload = WsErrorPayload { code: -1, msg: "negative" };
+        let payload = WsErrorPayload {
+            code: -1,
+            msg: "negative",
+        };
         let err = payload.classify();
-        assert_eq!(err, WsError::Unknown { code: -1, msg: "negative".into() });
+        assert_eq!(
+            err,
+            WsError::Unknown {
+                code: -1,
+                msg: "negative".into()
+            }
+        );
     }
 
     #[test]
@@ -544,17 +720,26 @@ mod tests {
         let ptr = payload.msg.as_ptr() as usize;
         let base = input.as_ptr() as usize;
         let limit = base + input.len();
-        assert!(ptr >= base && ptr < limit, "msg ptr {ptr:#x} outside [{base:#x}, {limit:#x})");
+        assert!(
+            ptr >= base && ptr < limit,
+            "msg ptr {ptr:#x} outside [{base:#x}, {limit:#x})"
+        );
     }
 
     #[test]
     fn display_unknown_property() {
-        assert_eq!(WsError::UnknownProperty.to_string(), "unknown property in SET_PROPERTY / GET_PROPERTY");
+        assert_eq!(
+            WsError::UnknownProperty.to_string(),
+            "unknown property in SET_PROPERTY / GET_PROPERTY"
+        );
     }
 
     #[test]
     fn display_invalid_value_type() {
-        assert_eq!(WsError::InvalidValueType.to_string(), "invalid value type: expected boolean");
+        assert_eq!(
+            WsError::InvalidValueType.to_string(),
+            "invalid value type: expected boolean"
+        );
     }
 
     #[test]
@@ -565,7 +750,10 @@ mod tests {
 
     #[test]
     fn display_unknown_code() {
-        let err = WsError::Unknown { code: 42, msg: "something broke".into() };
+        let err = WsError::Unknown {
+            code: 42,
+            msg: "something broke".into(),
+        };
         assert_eq!(err.to_string(), "[42] something broke");
     }
 

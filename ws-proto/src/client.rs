@@ -135,7 +135,6 @@ impl WsClient {
 
     /// Returns true if the client is currently connected.
     pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
-            && !self.stream.as_ref().is_some_and(|s| s.is_closed())
+        self.stream.is_some() && !self.stream.as_ref().is_some_and(|s| s.is_closed())
     }
 }

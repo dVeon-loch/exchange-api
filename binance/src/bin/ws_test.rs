@@ -4,7 +4,7 @@
 //! → CombinedStreamEvent.  The remaining wiring (CombinedStreamEvent → generic
 //! StreamData, output routing) belongs in ExchangeApi::init() — see TODOs below.
 
-use binance::parsers::{CombinedStreamRaw, CombinedStreamEvent};
+use binance::parsers::{CombinedStreamEvent, CombinedStreamRaw};
 use binance::BinanceSpot;
 use exchange_api::prelude::*;
 use ws_proto::WsClient;
@@ -14,8 +14,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Build exchange configuration ──────────────────────────────────────────
     // TODO: This should use ExchangeApiBuilder + init() once implemented.
 
-    let exchange = BinanceSpot;
-    let symbols = &["bnbbtc"];
+    let exchange = BinanceSpot::new();
+    let symbols = vec!["bnbbtc".to_string()];
     let streams = &[
         StreamKind::Ticker,
         StreamKind::Trade,
@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Connect ───────────────────────────────────────────────────────────────
     // TODO: This connection loop belongs in ExchangeApi::init().
 
-    let url = exchange.ws_url(symbols, streams);
+    let url = exchange.ws_url(&symbols, streams);
     println!("Connecting to: {url}");
 
     let config = ws_proto::WsConfig::new(&url);
@@ -53,14 +53,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("[{count}] ticker | {}  last={}", p.symbol, p.last_price);
             }
             CombinedStreamEvent::Trade(p) => {
-                println!("[{count}] trade  | {}  price={}  qty={}",
-                    p.symbol, p.price, p.quantity);
+                println!(
+                    "[{count}] trade  | {}  price={}  qty={}",
+                    p.symbol, p.price, p.quantity
+                );
             }
-            CombinedStreamEvent::OrderBook(p) => {
-                let best_bid = p.bids.first().map(|l| &l.0);
-                let best_ask = p.asks.first().map(|l| &l.0);
-                println!("[{count}] depth  | bids={} asks={}  best_bid={best_bid:?} best_ask={best_ask:?}",
-                    p.bids.len(), p.asks.len());
+            CombinedStreamEvent::DepthUpdate(p) => {
+                println!("[{count}] diff   | {}  bid_updates={}  ask_updates={}  seq=[{},{}]",
+                    p.symbol, p.bids.len(), p.asks.len(), p.first_update_id, p.final_update_id);
             }
         }
 

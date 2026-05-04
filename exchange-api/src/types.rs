@@ -1,5 +1,34 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+/// Target update rate for streaming data. Exchanges match this to their
+/// supported rates and select the closest supported rate.
+#[derive(Clone, Copy, Debug)]
+pub struct UpdateRate {
+    pub duration: Duration,
+}
+
+impl UpdateRate {
+    pub fn from_millis(ms: u64) -> Self {
+        Self {
+            duration: Duration::from_millis(ms),
+        }
+    }
+
+    /// Find the best supported rate from the given options.
+    /// Returns the supported rate with minimum absolute difference from target.
+    pub fn best_match(&self, supported: &[Duration]) -> Option<Duration> {
+        supported
+            .iter()
+            .min_by_key(|&&rate| {
+                let target_ms = self.duration.as_millis();
+                let rate_ms = rate.as_millis();
+                (target_ms as i128 - rate_ms as i128).abs()
+            })
+            .copied()
+    }
+}
 
 /// Describes a data stream to subscribe to on every registered exchange.
 #[derive(Clone, Debug)]
@@ -71,4 +100,49 @@ pub enum StreamData {
     Trade(Trade),
     OrderBook(OrderBookSnapshot),
     Ticker(Ticker),
+}
+
+impl StreamData {
+    pub fn to_string_pretty(&self) -> String {
+        match self {
+            StreamData::Trade(trade) => format!(
+                "[{}] trade {}  price={}  qty={}\n",
+                trade.timestamp.to_rfc3339(),
+                trade.symbol,
+                trade.price,
+                trade.size
+            ),
+            StreamData::OrderBook(orderbook) => format!(
+                "[{}] orderbook snapshot  | bids={:?} asks={:?}  best_bid={} best_ask={}\n",
+                orderbook.time.to_rfc3339(),
+                orderbook.bids,
+                orderbook.asks,
+                orderbook.best_bid,
+                orderbook.best_ask
+            ),
+            StreamData::Ticker(ticker) => {
+                format!(
+                    "[{}] ticker | {}  last={}\n",
+                    ticker.timestamp.to_rfc3339(),
+                    ticker.symbol,
+                    ticker.last_price
+                )
+            }
+        }
+    }
+}
+
+/// Unified symbol list retrieved from exchanges periodically
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SymbolList {
+    pub exchange: String,
+    pub updated_at: DateTime<Utc>,
+    pub symbols: Vec<Symbol>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Symbol {
+    pub symbol: String,
+    pub base: String,
+    pub quote: String,
 }

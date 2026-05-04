@@ -4,10 +4,13 @@ use tokio::io;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("WebSocket error: {0}")]
-    Ws(#[from] tokio_tungstenite::tungstenite::Error),
+    Ws(#[from] ws_proto::Error),
 
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("String UTF8 error: {0}")]
+    Utf8(#[from] std::str::Utf8Error),
 
     #[error("Kafka error: {0}")]
     Kafka(String),

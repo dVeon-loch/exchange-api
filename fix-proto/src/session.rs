@@ -57,13 +57,28 @@ impl Session {
         let fields = vec![
             (crate::tags::BEGIN_STRING, self.config.begin_string.clone()),
             (crate::tags::MSG_TYPE, "A".to_string()),
-            (crate::tags::SENDER_COMP_ID, self.config.sender_comp_id.clone()),
-            (crate::tags::TARGET_COMP_ID, self.config.target_comp_id.clone()),
+            (
+                crate::tags::SENDER_COMP_ID,
+                self.config.sender_comp_id.clone(),
+            ),
+            (
+                crate::tags::TARGET_COMP_ID,
+                self.config.target_comp_id.clone(),
+            ),
             (crate::tags::MSG_SEQ_NUM, self.outgoing_seq.to_string()),
-            (crate::tags::SENDING_TIME, chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string()),
+            (
+                crate::tags::SENDING_TIME,
+                chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string(),
+            ),
             (crate::tags::ENCRYPT_METHOD, "0".to_string()),
-            (crate::tags::HEART_BT_INT, self.config.heart_bt_int.to_string()),
-            (crate::tags::DEFAULT_APPL_VER_ID, self.config.default_appl_ver_id.clone()),
+            (
+                crate::tags::HEART_BT_INT,
+                self.config.heart_bt_int.to_string(),
+            ),
+            (
+                crate::tags::DEFAULT_APPL_VER_ID,
+                self.config.default_appl_ver_id.clone(),
+            ),
         ];
         self.outgoing_seq += 1;
         self.state = SessionState::LogonSent;
@@ -75,10 +90,19 @@ impl Session {
         let fields = vec![
             (crate::tags::BEGIN_STRING, self.config.begin_string.clone()),
             (crate::tags::MSG_TYPE, "0".to_string()),
-            (crate::tags::SENDER_COMP_ID, self.config.sender_comp_id.clone()),
-            (crate::tags::TARGET_COMP_ID, self.config.target_comp_id.clone()),
+            (
+                crate::tags::SENDER_COMP_ID,
+                self.config.sender_comp_id.clone(),
+            ),
+            (
+                crate::tags::TARGET_COMP_ID,
+                self.config.target_comp_id.clone(),
+            ),
             (crate::tags::MSG_SEQ_NUM, self.outgoing_seq.to_string()),
-            (crate::tags::SENDING_TIME, chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string()),
+            (
+                crate::tags::SENDING_TIME,
+                chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string(),
+            ),
         ];
         self.outgoing_seq += 1;
         crate::message::build_message(fields)
@@ -89,10 +113,19 @@ impl Session {
         let fields = vec![
             (crate::tags::BEGIN_STRING, self.config.begin_string.clone()),
             (crate::tags::MSG_TYPE, "1".to_string()),
-            (crate::tags::SENDER_COMP_ID, self.config.sender_comp_id.clone()),
-            (crate::tags::TARGET_COMP_ID, self.config.target_comp_id.clone()),
+            (
+                crate::tags::SENDER_COMP_ID,
+                self.config.sender_comp_id.clone(),
+            ),
+            (
+                crate::tags::TARGET_COMP_ID,
+                self.config.target_comp_id.clone(),
+            ),
             (crate::tags::MSG_SEQ_NUM, self.outgoing_seq.to_string()),
-            (crate::tags::SENDING_TIME, chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string()),
+            (
+                crate::tags::SENDING_TIME,
+                chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string(),
+            ),
             (crate::tags::TEST_REQ_ID, test_req_id.to_string()),
         ];
         self.outgoing_seq += 1;
@@ -104,10 +137,19 @@ impl Session {
         let fields = vec![
             (crate::tags::BEGIN_STRING, self.config.begin_string.clone()),
             (crate::tags::MSG_TYPE, "5".to_string()),
-            (crate::tags::SENDER_COMP_ID, self.config.sender_comp_id.clone()),
-            (crate::tags::TARGET_COMP_ID, self.config.target_comp_id.clone()),
+            (
+                crate::tags::SENDER_COMP_ID,
+                self.config.sender_comp_id.clone(),
+            ),
+            (
+                crate::tags::TARGET_COMP_ID,
+                self.config.target_comp_id.clone(),
+            ),
             (crate::tags::MSG_SEQ_NUM, self.outgoing_seq.to_string()),
-            (crate::tags::SENDING_TIME, chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string()),
+            (
+                crate::tags::SENDING_TIME,
+                chrono::Utc::now().format("%Y%m%d-%H:%M:%S").to_string(),
+            ),
         ];
         self.outgoing_seq += 1;
         self.state = SessionState::LogoutSent;
@@ -125,9 +167,7 @@ impl Session {
                 self.state = SessionState::Active;
                 Ok(SessionEvent::LogonReceived)
             }
-            Some(crate::types::MsgType::Heartbeat) => {
-                Ok(SessionEvent::HeartbeatReceived)
-            }
+            Some(crate::types::MsgType::Heartbeat) => Ok(SessionEvent::HeartbeatReceived),
             Some(crate::types::MsgType::TestRequest) => {
                 // Must respond with Heartbeat containing the TestReqID
                 Ok(SessionEvent::RespondHeartbeat)
@@ -145,12 +185,8 @@ impl Session {
                 }
                 Ok(SessionEvent::SequenceReset)
             }
-            Some(crate::types::MsgType::ResendRequest) => {
-                Ok(SessionEvent::ResendRequested)
-            }
-            Some(crate::types::MsgType::Reject) => {
-                Ok(SessionEvent::MessageRejected)
-            }
+            Some(crate::types::MsgType::ResendRequest) => Ok(SessionEvent::ResendRequested),
+            Some(crate::types::MsgType::Reject) => Ok(SessionEvent::MessageRejected),
             // Application messages pass through
             _ => Ok(SessionEvent::ApplicationMessage(msg.clone())),
         }

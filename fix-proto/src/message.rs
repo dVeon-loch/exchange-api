@@ -179,6 +179,9 @@ mod tests {
         let body = "8=FIX.4.4\x019=12\x0135=0";
         let expected_cs = compute_checksum(body.as_bytes());
         let raw = format!("{body}\x0110={expected_cs:03}\x01");
-        assert!(validate_checksum(&raw).unwrap(), "checksum should be {expected_cs}");
+        assert!(
+            validate_checksum(&raw).unwrap(),
+            "checksum should be {expected_cs}"
+        );
     }
 }
