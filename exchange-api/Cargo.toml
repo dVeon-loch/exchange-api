@@ -23,6 +23,6 @@ rdkafka = { workspace = true, optional = true }
 fred = { workspace = true, optional = true }
 
 [features]
-default = ["kafka", "redis"]
+default = []
 kafka = ["dep:rdkafka"]
 redis = ["dep:fred"]

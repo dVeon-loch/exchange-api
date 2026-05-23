@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 async-trait.workspace = true
-exchange-api = { path = "../exchange-api" }
+exchange-api = { path = "../exchange-api", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
