@@ -5,6 +5,7 @@ use std::sync::Arc;
 use futures::future::join_all;
 use serde::Deserialize;
 use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 use ws_proto::WsClient;
 
 use crate::output::{ChannelOutput, FileOutput, OutputConfig, OutputsSink};
@@ -50,6 +51,7 @@ impl ExchangeApi {
     pub async fn init(mut self) -> Result<ExchangeApiHandle, crate::Error> {
         let mut handles: Vec<tokio::task::JoinHandle<Result<(), crate::Error>>> = vec![];
         let update_rate = self.update_rate;
+        let cancel_token = CancellationToken::new();
 
         for exchange in self.exchanges.values().cloned() {
             let subscription_url = exchange.ws_url(&self.symbols, &self.streams, update_rate);
@@ -75,6 +77,8 @@ impl ExchangeApi {
                 handles.push(ChannelOutput::new(channel_out, rx).recv_handle);
             }
 
+            let cancel_token_clone = cancel_token.clone();
+
             handles.push(tokio::spawn(async move {
                 let config = ws_proto::WsConfig::new(&subscription_url);
                 let mut client = WsClient::connect(config).await?;
@@ -83,52 +87,63 @@ impl ExchangeApi {
                 let mut last_emitted: std::collections::HashMap<String, std::time::Instant> =
                     std::collections::HashMap::new();
 
-                while let Some(msg) = client.recv().await? {
-                    let text = match msg {
-                        ws_proto::WsMessage::Text(text) => text,
-                        ws_proto::WsMessage::Binary(utf8_text) => {
-                            String::from_utf8(utf8_text).map_err(|err| err.utf8_error())?
-                        }
-                        _ => continue, // Pings and Pongs are handled within recv
-                    };
-
-                    if let Some(data) = exchange.parse_stream(&text)? {
-                        // Apply throttling if update_rate is set
-                        let should_emit = update_rate.map_or(true, |rate| {
-                            let stream_key = match &data {
-                                crate::StreamData::Trade(_) => "Trade",
-                                crate::StreamData::OrderBook(_) => "OrderBook",
-                                crate::StreamData::Ticker(_) => "Ticker",
-                            };
-
-                            last_emitted
-                                .get(stream_key)
-                                .map_or(true, |t| t.elapsed() >= rate.duration)
-                        });
-
-                        if should_emit {
-                            if update_rate.is_some() {
-                                let stream_key = match &data {
-                                    crate::StreamData::Trade(_) => "Trade",
-                                    crate::StreamData::OrderBook(_) => "OrderBook",
-                                    crate::StreamData::Ticker(_) => "Ticker",
+                loop {
+                    tokio::select! {
+                        _ = cancel_token_clone.cancelled() => break,
+                        msg = client.recv() => match msg {
+                            Ok(msg) => if let Some(msg) = msg {
+                                let text = match msg {
+                                    ws_proto::WsMessage::Text(text) => text,
+                                    ws_proto::WsMessage::Binary(utf8_text) => {
+                                        String::from_utf8(utf8_text).map_err(|err| err.utf8_error())?
+                                    }
+                                    _ => continue, // Pings and Pongs are handled within recv
                                 };
-                                last_emitted
-                                    .insert(stream_key.to_string(), std::time::Instant::now());
-                            }
 
-                            match outputs_sink.route_to_sinks(data) {
-                                Ok(count) => tracing::debug!(
-                                    output_count = count,
-                                    "Successfully routed data to outputs"
-                                ),
-                                Err(err) => {
-                                    tracing::error!(error=%err,"Error routing data to outputs")
+                                if let Some(data) = exchange.parse_stream(&text)? {
+                                    // Apply throttling if update_rate is set
+                                    let should_emit = update_rate.map_or(true, |rate| {
+                                        let stream_key = match &data {
+                                            crate::StreamData::Trade(_) => "Trade",
+                                            crate::StreamData::OrderBook(_) => "OrderBook",
+                                            crate::StreamData::Ticker(_) => "Ticker",
+                                        };
+
+                                        last_emitted
+                                            .get(stream_key)
+                                            .map_or(true, |t| t.elapsed() >= rate.duration)
+                                    });
+
+                                    if should_emit {
+                                        if update_rate.is_some() {
+                                            let stream_key = match &data {
+                                                crate::StreamData::Trade(_) => "Trade",
+                                                crate::StreamData::OrderBook(_) => "OrderBook",
+                                                crate::StreamData::Ticker(_) => "Ticker",
+                                            };
+                                            last_emitted
+                                                .insert(stream_key.to_string(), std::time::Instant::now());
+                                        }
+
+                                        match outputs_sink.route_to_sinks(data) {
+                                            Ok(count) => tracing::debug!(
+                                                output_count = count,
+                                                "Successfully routed data to outputs"
+                                            ),
+                                            Err(err) => {
+                                                tracing::error!(error=%err,"Error routing data to outputs")
+                                            }
+                                        }
+                                    }
                                 }
-                            }
-                        }
+                            } else {
+                                break
+                            },
+                            Err(err) => return Err(err.into()),
+                        },
                     }
                 }
+
                 Ok(())
             }));
         }
@@ -136,6 +151,7 @@ impl ExchangeApi {
         Ok(ExchangeApiHandle {
             exchanges: self.exchanges,
             handles,
+            cancel_token,
         })
     }
 }
@@ -146,6 +162,7 @@ impl ExchangeApi {
 pub struct ExchangeApiHandle {
     pub(crate) exchanges: HashMap<ExchangeName, Arc<dyn Exchange>>,
     handles: Vec<tokio::task::JoinHandle<Result<(), crate::Error>>>,
+    cancel_token: CancellationToken,
 }
 
 impl ExchangeApiHandle {
@@ -166,9 +183,15 @@ impl ExchangeApiHandle {
             .fetch_symbol_list()
             .await
     }
+
+    /// Cancels all exchange tasks and consumes self. Call this when the last output has been removed, to cleanly shut down.
+    pub async fn cancel_all(&self) {
+        self.cancel_token.cancel();
+    }
+
     /// Wait for all exchange tasks to complete (runs indefinitely under
     /// normal operation).
-    pub async fn join_all(self) {
+    async fn join_all(self) {
         for result in join_all(self.handles).await {
             match result {
                 Ok(task_result) => {
