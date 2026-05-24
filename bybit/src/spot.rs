@@ -48,11 +48,15 @@ impl BybitSpot {
                     }
                 }
                 StreamKind::OrderBook { depth } => {
-                    // Supported Bybit depth update (level,speed): (1, 10ms), (50, 20ms), (200, 100ms), (1000, 200ms)
-                    // TODO: Modify the StreamKind::OrderBook so that it forces the caller to specify a supported depth/update time
-                    // orderbook.{depth}.{symbol} e.g., orderbook.1.BTCUSDT
+                    // Valid Bybit spot depths: 1 (10ms), 50 (20ms), 200 (100ms), 1000 (200ms).
+                    // Snap the requested depth to the nearest valid level.
+                    const VALID_DEPTHS: [usize; 4] = [1, 50, 200, 1000];
+                    let snapped = *VALID_DEPTHS
+                        .iter()
+                        .min_by_key(|&&d| d.abs_diff(*depth))
+                        .unwrap();
                     for symbol in symbols {
-                        subscriptions.push(format!("orderbook.{}.{}", depth, symbol.to_uppercase()));
+                        subscriptions.push(format!("orderbook.{}.{}", snapped, symbol.to_uppercase()));
                     }
                 }
                 StreamKind::Ticker => {
