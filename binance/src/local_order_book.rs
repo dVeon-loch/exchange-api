@@ -38,6 +38,8 @@ pub struct LocalOrderBook {
     pub bids: BTreeMap<OrderedFloat<f64>, f64>,
     pub asks: BTreeMap<OrderedFloat<f64>, f64>,
     state: ObState,
+    sequence: u64,
+    last_snapshot_time: Option<std::time::Instant>,
 }
 
 impl LocalOrderBook {
@@ -52,6 +54,8 @@ impl LocalOrderBook {
                 buffer: Vec::new(),
                 snapshot_rx: None,
             },
+            sequence: 0,
+            last_snapshot_time: None,
         }
     }
 
@@ -64,17 +68,20 @@ impl LocalOrderBook {
             buffer: Vec::new(),
             snapshot_rx: None,
         };
+        self.sequence = 0;
+        self.last_snapshot_time = None;
     }
 
     /// Apply an incoming diff depth event.
     ///
     /// While buffering, events are queued until the REST snapshot arrives.
-    /// Returns `Some(snapshot)` once the OB is live and up to date, or
-    /// `None` while still synchronising.
+    /// Returns `Some(StreamData)` once the OB is live: either an `OrderBook` full snapshot
+    /// (on initial sync and every ~10 s) or an `OrderBookDelta` for incremental updates.
+    /// Returns `None` while still synchronising.
     pub fn handle_update(
         &mut self,
         update: &DepthUpdatePayload<'_>,
-    ) -> Result<Option<exchange_api::OrderBookSnapshot>, exchange_api::Error> {
+    ) -> Result<Option<exchange_api::StreamData>, exchange_api::Error> {
         let owned = owned_update(update)?;
 
         // Swap state out to avoid borrow conflicts during Live -> Buffering transitions.
@@ -84,7 +91,19 @@ impl LocalOrderBook {
             ObState::Live => {
                 self.state = ObState::Live;
                 self.apply_owned_update(&owned)?;
-                Ok(Some(self.snapshot()))
+                self.sequence += 1;
+
+                let emit_snapshot = self.last_snapshot_time
+                    .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(10));
+
+                if emit_snapshot {
+                    self.last_snapshot_time = Some(std::time::Instant::now());
+                    Ok(Some(exchange_api::StreamData::OrderBook(self.snapshot())))
+                } else {
+                    Ok(Some(exchange_api::StreamData::OrderBookDelta(
+                        self.make_delta(&owned),
+                    )))
+                }
             }
             ObState::Buffering {
                 mut buffer,
@@ -154,9 +173,11 @@ impl LocalOrderBook {
                         self.state = ObState::Live;
                         for u in buffer {
                             self.apply_owned_update(&u)?;
+                            self.sequence += 1;
                         }
-
-                        Ok(Some(self.snapshot()))
+                        // Always emit a full snapshot after initial sync.
+                        self.last_snapshot_time = Some(std::time::Instant::now());
+                        Ok(Some(exchange_api::StreamData::OrderBook(self.snapshot())))
                     }
                     Ok(Err(_)) => {
                         // Fetch failed — re-attempt.
@@ -254,6 +275,41 @@ impl LocalOrderBook {
             ask_depth,
             bids,
             asks,
+        }
+    }
+
+    fn make_delta(&self, update: &BufferedUpdate) -> exchange_api::OrderBookDelta {
+        let bid_changes = update
+            .bids
+            .iter()
+            .map(|&(price, size)| exchange_api::PriceLevel { price, size })
+            .collect();
+        let ask_changes = update
+            .asks
+            .iter()
+            .map(|&(price, size)| exchange_api::PriceLevel { price, size })
+            .collect();
+
+        let best_bid = self.bids.keys().next_back().map_or(0.0, |k| k.0);
+        let best_ask = self.asks.keys().next().map_or(0.0, |k| k.0);
+        let spread = best_ask - best_bid;
+        let bid_depth: f64 = self.bids.values().sum();
+        let ask_depth: f64 = self.asks.values().sum();
+        let time = chrono::DateTime::from_timestamp_millis(self.last_event_time)
+            .unwrap_or_else(chrono::Utc::now);
+
+        exchange_api::OrderBookDelta {
+            exchange: "binance".to_string(),
+            symbol: self.symbol.clone(),
+            time,
+            sequence: self.sequence,
+            best_bid,
+            best_ask,
+            spread,
+            bid_depth,
+            ask_depth,
+            bid_changes,
+            ask_changes,
         }
     }
 }

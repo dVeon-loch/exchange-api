@@ -134,6 +134,9 @@ impl RedisOutput {
                     )
                     .await?;
             }
+            // TODO: publish OrderBookDelta to the updates channel (skip SET latest since a delta
+            // alone is not useful as a "latest" value — subscribers should apply it to local state)
+            StreamData::OrderBookDelta(_) => {}
         }
 
         Ok(())

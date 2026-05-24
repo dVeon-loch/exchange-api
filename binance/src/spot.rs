@@ -126,7 +126,7 @@ impl Exchange for BinanceSpot {
                     .entry(update.symbol.clone())
                     .or_insert_with(|| LocalOrderBook::new(update.symbol.clone()));
                 match ob.handle_update(&update) {
-                    Ok(Some(snapshot)) => Ok(vec![exchange_api::StreamData::OrderBook(snapshot)]),
+                    Ok(Some(event)) => Ok(vec![event]),
                     Ok(None) => Ok(vec![]),
                     Err(_) => {
                         ob.reset();

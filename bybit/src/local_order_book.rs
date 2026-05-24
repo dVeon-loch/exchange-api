@@ -10,6 +10,8 @@ pub struct LocalOrderBook {
     pub last_event_time: u64,
     pub bids: BTreeMap<OrderedFloat<f64>, f64>,
     pub asks: BTreeMap<OrderedFloat<f64>, f64>,
+    sequence: u64,
+    last_snapshot_time: Option<std::time::Instant>,
 }
 
 impl LocalOrderBook {
@@ -20,6 +22,8 @@ impl LocalOrderBook {
             last_event_time: 0,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
+            sequence: 0,
+            last_snapshot_time: None,
         }
     }
 
@@ -28,21 +32,87 @@ impl LocalOrderBook {
         self.last_event_time = 0;
         self.bids.clear();
         self.asks.clear();
+        self.sequence = 0;
+        self.last_snapshot_time = None;
     }
 
     pub fn handle_update(
         &mut self,
         update_type: OrderbookUpdateType,
         update: &DepthUpdatePayload<'_>,
-    ) -> Result<Option<exchange_api::OrderBookSnapshot>, exchange_api::Error> {
-        if matches!(update_type, OrderbookUpdateType::Snapshot) {
+    ) -> Result<Option<exchange_api::StreamData>, exchange_api::Error> {
+        let is_snapshot = matches!(update_type, OrderbookUpdateType::Snapshot);
+        if is_snapshot {
             self.reset();
         }
+
+        // Collect changed levels before applying (for delta construction).
+        let bid_changes: Vec<exchange_api::PriceLevel> = update
+            .bids
+            .iter()
+            .filter_map(|l| {
+                let price = l.0.parse::<f64>().ok()?;
+                let size = l.1.parse::<f64>().ok()?;
+                Some(exchange_api::PriceLevel { price, size })
+            })
+            .collect();
+        let ask_changes: Vec<exchange_api::PriceLevel> = update
+            .asks
+            .iter()
+            .filter_map(|l| {
+                let price = l.0.parse::<f64>().ok()?;
+                let size = l.1.parse::<f64>().ok()?;
+                Some(exchange_api::PriceLevel { price, size })
+            })
+            .collect();
+
         apply_side(&mut self.bids, &update.bids)?;
         apply_side(&mut self.asks, &update.asks)?;
         self.last_update_id = update.update_id;
         self.last_event_time = update.timestamp_ms;
-        Ok(Some(self.snapshot()))
+        self.sequence += 1;
+
+        let emit_snapshot = is_snapshot
+            || self
+                .last_snapshot_time
+                .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(10));
+
+        if emit_snapshot {
+            self.last_snapshot_time = Some(std::time::Instant::now());
+            Ok(Some(exchange_api::StreamData::OrderBook(self.snapshot())))
+        } else {
+            Ok(Some(exchange_api::StreamData::OrderBookDelta(
+                self.make_delta(bid_changes, ask_changes),
+            )))
+        }
+    }
+
+    fn make_delta(
+        &self,
+        bid_changes: Vec<exchange_api::PriceLevel>,
+        ask_changes: Vec<exchange_api::PriceLevel>,
+    ) -> exchange_api::OrderBookDelta {
+        let best_bid = self.bids.keys().next_back().map_or(0.0, |k| k.0);
+        let best_ask = self.asks.keys().next().map_or(0.0, |k| k.0);
+        let spread = best_ask - best_bid;
+        let bid_depth: f64 = self.bids.values().sum();
+        let ask_depth: f64 = self.asks.values().sum();
+        let time = DateTime::from_timestamp_millis(self.last_event_time as i64)
+            .unwrap_or_else(Utc::now);
+
+        exchange_api::OrderBookDelta {
+            exchange: "bybit".to_string(),
+            symbol: self.symbol.clone(),
+            time,
+            sequence: self.sequence,
+            best_bid,
+            best_ask,
+            spread,
+            bid_depth,
+            ask_depth,
+            bid_changes,
+            ask_changes,
+        }
     }
 
     pub fn snapshot(&self) -> exchange_api::OrderBookSnapshot {

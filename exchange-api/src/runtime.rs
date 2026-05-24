@@ -124,6 +124,8 @@ impl ExchangeApi {
                                         let stream_key = match &data {
                                             crate::StreamData::Trade(_) => "Trade",
                                             crate::StreamData::OrderBook(_) => "OrderBook",
+                                            // Deltas share the OrderBook rate-limit bucket
+                                            crate::StreamData::OrderBookDelta(_) => "OrderBook",
                                             crate::StreamData::Ticker(_) => "Ticker",
                                         };
 

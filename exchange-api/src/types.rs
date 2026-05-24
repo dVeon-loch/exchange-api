@@ -93,12 +93,34 @@ pub enum Side {
     Sell,
 }
 
+/// An incremental orderbook update. Contains only levels that changed since the last event.
+/// `size == 0.0` on a level means that level was deleted.
+/// Consumers should maintain local book state and apply deltas against it.
+/// A full `OrderBook` snapshot is emitted periodically (every ~10s) for resync.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OrderBookDelta {
+    pub exchange: String,
+    pub symbol: String,
+    pub time: DateTime<Utc>,
+    pub sequence: u64,
+    pub best_bid: f64,
+    pub best_ask: f64,
+    pub spread: f64,
+    pub bid_depth: f64,
+    pub ask_depth: f64,
+    pub bid_changes: Vec<PriceLevel>,
+    pub ask_changes: Vec<PriceLevel>,
+}
+
 /// Unified stream event produced by parsers and consumed by outputs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamData {
     Trade(Trade),
+    /// Full orderbook snapshot. Emitted on initial sync and every ~10 seconds thereafter.
     OrderBook(OrderBookSnapshot),
+    /// Incremental orderbook delta. Emitted on every live update between snapshots.
+    OrderBookDelta(OrderBookDelta),
     Ticker(Ticker),
 }
 
@@ -120,6 +142,13 @@ impl StreamData {
                 orderbook.best_bid,
                 orderbook.best_ask
             ),
+            StreamData::OrderBookDelta(delta) => format!(
+                "[{}] orderbook delta  seq={}  bid_changes={} ask_changes={}\n",
+                delta.time.to_rfc3339(),
+                delta.sequence,
+                delta.bid_changes.len(),
+                delta.ask_changes.len(),
+            ),
             StreamData::Ticker(ticker) => {
                 format!(
                     "[{}] ticker | {}  last={}\n",
@@ -135,6 +164,8 @@ impl StreamData {
         match self {
             StreamData::Trade(t) => (&t.exchange, &t.symbol, "trade"),
             StreamData::OrderBook(o) => (&o.exchange, &o.symbol, "orderbook"),
+            // TODO: add Redis SET/PUBLISH for orderbook_delta when Redis output is wired up
+            StreamData::OrderBookDelta(d) => (&d.exchange, &d.symbol, "orderbook_delta"),
             StreamData::Ticker(t) => (&t.exchange, &t.symbol, "ticker"),
         }
     }
