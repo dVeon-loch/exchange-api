@@ -4,8 +4,8 @@
 //! → CombinedStreamEvent.  The remaining wiring (CombinedStreamEvent → generic
 //! StreamData, output routing) belongs in ExchangeApi::init() — see TODOs below.
 
-use binance::parsers::{CombinedStreamEvent, CombinedStreamRaw};
-use binance::BinanceSpot;
+use okx::parsers::{CombinedStreamEvent, CombinedStreamRaw};
+use okx::BinanceSpot as OkxSpot;
 use exchange_api::prelude::*;
 use exchange_api::Exchange;
 use ws_proto::WsClient;
@@ -15,7 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Build exchange configuration ──────────────────────────────────────────
     // TODO: This should use ExchangeApiBuilder + init() once implemented.
 
-    let exchange = BinanceSpot::new();
+    let exchange = OkxSpot::new();
     let symbols = vec!["bnbbtc".to_string()];
     let streams = &[
         StreamKind::Ticker,
@@ -61,14 +61,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             CombinedStreamEvent::DepthUpdate(p) => {
-                println!(
-                    "[{count}] diff   | {}  bid_updates={}  ask_updates={}  seq=[{},{}]",
-                    p.symbol,
-                    p.bids.len(),
-                    p.asks.len(),
-                    p.first_update_id,
-                    p.final_update_id
-                );
+                println!("[{count}] diff   | {}  bid_updates={}  ask_updates={}  seq=[{},{}]",
+                    p.symbol, p.bids.len(), p.asks.len(), p.first_update_id, p.final_update_id);
             }
         }
 

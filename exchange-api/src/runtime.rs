@@ -17,12 +17,15 @@ use crate::SymbolList;
 pub enum ExchangeName {
     #[serde(alias = "BINANCE", alias = "binance")]
     Binance,
+    #[serde(alias = "BYBIT", alias = "bybit")]
+    Bybit,
 }
 
 impl Display for ExchangeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExchangeName::Binance => write!(f, "Binance"),
+            ExchangeName::Bybit => write!(f, "Bybit"),
         }
     }
 }
@@ -54,7 +57,7 @@ impl ExchangeApi {
         let cancel_token = CancellationToken::new();
 
         for exchange in self.exchanges.values().cloned() {
-            let subscription_url = exchange.ws_url(&self.symbols, &self.streams, update_rate);
+            let endpoints = exchange.ws_endpoints(&self.symbols, &self.streams, update_rate);
 
             let (tx, rx) = broadcast::channel(100);
             // let _kafka_output = if let Some(config) = self.output.kafka {todo!()} else {None};
@@ -73,79 +76,91 @@ impl ExchangeApi {
                 handles.push(FileOutput::new(config, rx.resubscribe()).recv_handle);
             }
 
-            if let Some(channel_out) = self.output.custom_channel.take() {
-                handles.push(ChannelOutput::new(channel_out, rx).recv_handle);
+            if let Some(ref channel_out) = self.output.custom_channel {
+                handles.push(ChannelOutput::new(channel_out.clone(), rx).recv_handle);
             }
 
-            let cancel_token_clone = cancel_token.clone();
+            for endpoint in endpoints {
+                let exchange = Arc::clone(&exchange);
+                let tx = tx.clone();
+                let cancel_token_clone = cancel_token.clone();
 
-            handles.push(tokio::spawn(async move {
-                let config = ws_proto::WsConfig::new(&subscription_url);
-                let mut client = WsClient::connect(config).await?;
+                handles.push(tokio::spawn(async move {
+                    let mut config = ws_proto::WsConfig::new(&endpoint.url);
+                    if let Some(interval) = exchange.ping_interval() {
+                        config = config.with_ping_interval(interval);
+                    }
+                    let mut client = WsClient::connect(config).await?;
 
-                let outputs_sink = OutputsSink::new(tx);
-                let mut last_emitted: std::collections::HashMap<String, std::time::Instant> =
-                    std::collections::HashMap::new();
+                    match endpoint.subscription {
+                        crate::SubscriptionMethod::UrlEncoded => {}
+                        crate::SubscriptionMethod::JsonArgs(args) => {
+                            let msg = serde_json::json!({ "op": "subscribe", "args": args });
+                            client
+                                .send(ws_proto::WsMessage::Text(msg.to_string()))
+                                .await?;
+                        }
+                    }
 
-                loop {
-                    tokio::select! {
-                        _ = cancel_token_clone.cancelled() => break,
-                        msg = client.recv() => match msg {
-                            Ok(msg) => if let Some(msg) = msg {
-                                let text = match msg {
-                                    ws_proto::WsMessage::Text(text) => text,
-                                    ws_proto::WsMessage::Binary(utf8_text) => {
-                                        String::from_utf8(utf8_text).map_err(|err| err.utf8_error())?
-                                    }
-                                    _ => continue, // Pings and Pongs are handled within recv
-                                };
+                    let outputs_sink = OutputsSink::new(tx);
 
-                                if let Some(data) = exchange.parse_stream(&text)? {
-                                    // Apply throttling if update_rate is set
-                                    let should_emit = update_rate.map_or(true, |rate| {
+                    let mut last_emitted: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+
+                    loop {
+                        tokio::select! {
+                            _ = cancel_token_clone.cancelled() => break,
+                            msg = client.recv() => match msg {
+                                Ok(msg) => if let Some(msg) = msg {
+                                    let text = match msg {
+                                        ws_proto::WsMessage::Text(text) => text,
+                                        ws_proto::WsMessage::Binary(utf8_text) => {
+                                            String::from_utf8(utf8_text).map_err(|err| err.utf8_error())?
+                                        }
+                                        _ => continue, // Pings and Pongs are handled within recv
+                                    };
+
+                                    for data in exchange.parse_stream(&text)? {
+                                        // Apply throttling if update_rate is set
                                         let stream_key = match &data {
                                             crate::StreamData::Trade(_) => "Trade",
                                             crate::StreamData::OrderBook(_) => "OrderBook",
                                             crate::StreamData::Ticker(_) => "Ticker",
                                         };
 
-                                        last_emitted
-                                            .get(stream_key)
-                                            .map_or(true, |t| t.elapsed() >= rate.duration)
-                                    });
-
-                                    if should_emit {
-                                        if update_rate.is_some() {
-                                            let stream_key = match &data {
-                                                crate::StreamData::Trade(_) => "Trade",
-                                                crate::StreamData::OrderBook(_) => "OrderBook",
-                                                crate::StreamData::Ticker(_) => "Ticker",
-                                            };
+                                        let should_emit = update_rate.map_or(true, |rate| {
                                             last_emitted
-                                                .insert(stream_key.to_string(), std::time::Instant::now());
-                                        }
+                                                .get(stream_key)
+                                                .map_or(true, |t| t.elapsed() >= rate.duration)
+                                        });
 
-                                        match outputs_sink.route_to_sinks(data) {
-                                            Ok(count) => tracing::debug!(
-                                                output_count = count,
-                                                "Successfully routed data to outputs"
-                                            ),
-                                            Err(err) => {
-                                                tracing::error!(error=%err,"Error routing data to outputs")
+                                        if should_emit {
+                                            if update_rate.is_some() {
+                                                last_emitted
+                                                    .insert(stream_key.to_string(), std::time::Instant::now());
+                                            }
+
+                                            match outputs_sink.route_to_sinks(data) {
+                                                Ok(count) => tracing::debug!(
+                                                    output_count = count,
+                                                    "Successfully routed data to outputs"
+                                                ),
+                                                Err(err) => {
+                                                    tracing::error!(error=%err,"Error routing data to outputs")
+                                                }
                                             }
                                         }
                                     }
-                                }
-                            } else {
-                                break
+                                } else {
+                                    break
+                                },
+                                Err(err) => return Err(err.into()),
                             },
-                            Err(err) => return Err(err.into()),
-                        },
+                        }
                     }
-                }
 
-                Ok(())
-            }));
+                    Ok(())
+                }));
+            }
         }
 
         Ok(ExchangeApiHandle {

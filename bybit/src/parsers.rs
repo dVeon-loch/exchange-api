@@ -1,41 +1,64 @@
 use chrono::DateTime;
-use exchange_api::Ticker;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 use std::fmt;
 use std::num::ParseFloatError;
 
-/// Combined stream wrapper from Binance WebSocket.
+/// Combined stream wrapper from Bybit WebSocket.
 ///
-/// Binance wraps individual stream events inside a JSON object with the format
-/// `{"stream":"<streamName>","data":<rawPayload>}`.  This intermediate struct
-/// captures both fields so we can dispatch to the correct typed payload based
-/// on the stream name without intermediate `serde_json::Value` allocations.
+/// Bybit uses a "topic" identifier field on all responses
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-pub struct CombinedStreamRaw {
-    pub stream: String,
+pub struct CombinedStreamRaw<'a> {
+    pub topic: String,
+    /// Used for the orderbook only, everything else is "snapshot"
+    #[serde(rename = "type")]
+    pub update_type: Cow<'a, str>,
+    #[serde(rename = "ts")]
+    pub timestamp_ms: u64,
     pub data: Box<RawValue>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OrderbookUpdateType {
+    Snapshot,
+    Delta,
+}
+
 #[allow(dead_code)]
-impl CombinedStreamRaw {
+impl CombinedStreamRaw<'_> {
     /// Parse the raw inner payload into the correct typed variant.
     pub fn parse(&self) -> Result<CombinedStreamEvent<'_>, exchange_api::Error> {
         let data = self.data.get();
-        if self.stream.contains("@ticker") {
-            Ok(CombinedStreamEvent::Ticker(serde_json::from_str(data)?))
-        } else if self.stream.contains("@trade") {
-            Ok(CombinedStreamEvent::Trade(serde_json::from_str(data)?))
-        } else if self.stream.contains("@depth") {
-            let mut payload: DepthUpdatePayload = serde_json::from_str(data)?;
-            payload.symbol = payload.stream_symbol.to_string();
-            Ok(CombinedStreamEvent::DepthUpdate(payload))
+        if self.topic.contains("tickers") {
+            let mut payload: TickerPayload<'_> = serde_json::from_str(data)?;
+            payload.timestamp_ms = self.timestamp_ms;
+            Ok(CombinedStreamEvent::Ticker(payload))
+        } else if self.topic.contains("publicTrade") {
+            let mut trades: Vec<TradePayload<'_>> = serde_json::from_str(data)?;
+            for t in &mut trades {
+                t.timestamp_ms = self.timestamp_ms;
+            }
+            Ok(CombinedStreamEvent::Trade(trades))
+        } else if self.topic.contains("orderbook") {
+            let update_type = match self.update_type.as_ref() {
+                "snapshot" => OrderbookUpdateType::Snapshot,
+                "delta" => OrderbookUpdateType::Delta,
+                other => {
+                    return Err(exchange_api::Error::Config(format!(
+                        "unknown orderbook update type: {other}"
+                    )))
+                }
+            };
+            let mut payload: DepthUpdatePayload<'_> = serde_json::from_str(data)?;
+            payload.timestamp_ms = self.timestamp_ms;
+            Ok(CombinedStreamEvent::DepthUpdate(update_type, payload))
         } else {
             Err(exchange_api::Error::Config(format!(
                 "unknown stream type: {}",
-                self.stream,
+                self.topic,
             )))
         }
     }
@@ -47,61 +70,39 @@ impl CombinedStreamRaw {
 #[derive(Debug)]
 pub enum CombinedStreamEvent<'a> {
     Ticker(TickerPayload<'a>),
-    Trade(TradePayload<'a>),
-    DepthUpdate(DepthUpdatePayload<'a>),
+    /// Bybit batches multiple trades per message.
+    Trade(Vec<TradePayload<'a>>),
+    DepthUpdate(OrderbookUpdateType, DepthUpdatePayload<'a>),
 }
 
-// Stream name: <symbol>@ticker
+// Topic: tickers.{symbol}
+// `data` is a single object (always "snapshot" type for spot).
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TickerPayload<'a> {
-    #[serde(rename = "e", borrow)]
-    pub event_type: Cow<'a, str>,
-    #[serde(rename = "E")]
-    pub event_time: i64,
-    #[serde(rename = "s", borrow)]
+    /// Set from the outer CombinedStreamRaw.timestamp_ms after deserialization.
+    #[serde(skip)]
+    pub timestamp_ms: u64,
+    #[serde(borrow)]
     pub symbol: Cow<'a, str>,
-    #[serde(rename = "p", borrow)]
-    pub price_change: Cow<'a, str>,
-    #[serde(rename = "P", borrow)]
-    pub price_change_percent: Cow<'a, str>,
-    #[serde(rename = "w", borrow)]
-    pub weighted_avg_price: Cow<'a, str>,
-    #[serde(rename = "x", borrow)]
-    pub first_trade_price: Cow<'a, str>,
-    #[serde(rename = "c", borrow)]
+    #[serde(borrow)]
     pub last_price: Cow<'a, str>,
-    #[serde(rename = "Q", borrow)]
-    pub last_quantity: Cow<'a, str>,
-    #[serde(rename = "b", borrow)]
-    pub best_bid_price: Cow<'a, str>,
-    #[serde(rename = "B", borrow)]
-    pub best_bid_quantity: Cow<'a, str>,
-    #[serde(rename = "a", borrow)]
-    pub best_ask_price: Cow<'a, str>,
-    #[serde(rename = "A", borrow)]
-    pub best_ask_quantity: Cow<'a, str>,
-    #[serde(rename = "o", borrow)]
-    pub open_price: Cow<'a, str>,
-    #[serde(rename = "h", borrow)]
-    pub high_price: Cow<'a, str>,
-    #[serde(rename = "l", borrow)]
-    pub low_price: Cow<'a, str>,
-    #[serde(rename = "v", borrow)]
-    pub base_volume: Cow<'a, str>,
-    #[serde(rename = "q", borrow)]
-    pub quote_volume: Cow<'a, str>,
-    #[serde(rename = "O")]
-    pub stats_open_time: i64,
-    #[serde(rename = "C")]
-    pub stats_close_time: i64,
-    #[serde(rename = "F")]
-    pub first_trade_id: i64,
-    #[serde(rename = "L")]
-    pub last_trade_id: i64,
-    #[serde(rename = "n")]
-    pub total_trades: i64,
+    #[serde(borrow)]
+    pub high_price_24h: Cow<'a, str>,
+    #[serde(borrow)]
+    pub low_price_24h: Cow<'a, str>,
+    #[serde(borrow)]
+    pub prev_price_24h: Cow<'a, str>,
+    #[serde(borrow)]
+    pub volume_24h: Cow<'a, str>,
+    #[serde(borrow)]
+    pub turnover_24h: Cow<'a, str>,
+    #[serde(borrow)]
+    pub price_24h_pcnt: Cow<'a, str>,
+    #[serde(borrow)]
+    pub usd_index_price: Cow<'a, str>,
 }
 
 impl TryInto<exchange_api::Ticker> for TickerPayload<'_> {
@@ -109,102 +110,110 @@ impl TryInto<exchange_api::Ticker> for TickerPayload<'_> {
 
     fn try_into(self) -> Result<exchange_api::Ticker, Self::Error> {
         Ok(exchange_api::Ticker {
-            exchange: "binance".to_string(),
+            exchange: "bybit".to_string(),
             symbol: self.symbol.to_string(),
             last_price: self
                 .last_price
                 .parse::<f64>()
                 .map_err(|err| parse_float_error("last_price", err))?,
-            timestamp: DateTime::from_timestamp_millis(self.event_time).ok_or_else(|| {
-                exchange_api::Error::Exchange(
-                    "could not parse Binance returned event_time as valid DateTime<Utc>"
-                        .to_string(),
-                )
-            })?,
+            timestamp: DateTime::from_timestamp_millis(self.timestamp_ms as i64).ok_or_else(
+                || {
+                    exchange_api::Error::Exchange(
+                        "could not parse Bybit ts as valid DateTime<Utc>".to_string(),
+                    )
+                },
+            )?,
         })
     }
 }
 
-// impl TryFrom<TickerPayload<'_>> for exchange_api::Ticker {
-//     type Error = exchange_api::Error;
-
-//     fn try_from(value: TickerPayload<'_>) -> Result<Self, Self::Error> {
-//         value.try_into()
-//     }
-// }
-
 fn parse_float_error(field: &'static str, error: ParseFloatError) -> exchange_api::Error {
     exchange_api::Error::Exchange(format!(
-        "could not parse Binance returned {field} as valid f64. Error: {error}"
+        "could not parse Bybit returned {field} as valid f64. Error: {error}"
     ))
 }
 
-// Stream name: <symbol>@trade
+// Topic: publicTrade.{symbol}
+// `data` is an array of trade entries (ascending fill time).
+
+//     "data": [
+//         {
+//             "T": 1672304486865,
+//             "s": "BTCUSDT",
+//             "S": "Buy",
+//             "v": "0.001",
+//             "p": "16578.50",
+//             "i": "20f43950-d8dd-5b31-9112-a178eb6023af",
+//             "BT": false,
+//             "seq": 1783284617
+//         }
+//     ]
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct TradePayload<'a> {
-    #[serde(rename = "e", borrow)]
-    pub event_type: Cow<'a, str>,
-    #[serde(rename = "E")]
-    pub event_time: i64,
+    /// Set from the outer CombinedStreamRaw.timestamp_ms after deserialization.
+    #[serde(skip)]
+    pub timestamp_ms: u64,
+    /// Fill timestamp (milliseconds).
+    #[serde(rename = "T")]
+    pub fill_timestamp_ms: u64,
     #[serde(rename = "s", borrow)]
     pub symbol: Cow<'a, str>,
-    #[serde(rename = "t")]
-    pub trade_id: i64,
+    /// Taker side: `"Buy"` or `"Sell"`.
+    #[serde(rename = "S", borrow)]
+    pub side: Cow<'a, str>,
+    /// Trade size.
+    #[serde(rename = "v", borrow)]
+    pub size: Cow<'a, str>,
+    /// Trade price.
     #[serde(rename = "p", borrow)]
     pub price: Cow<'a, str>,
-    #[serde(rename = "q", borrow)]
-    pub quantity: Cow<'a, str>,
-    #[serde(rename = "T")]
-    pub trade_time: i64,
-    #[serde(rename = "m")]
-    pub is_buyer_market_maker: bool,
-    #[serde(rename = "M")]
-    pub ignore: bool,
+    /// Trade ID (UUID string).
+    #[serde(rename = "i", borrow)]
+    pub trade_id: Cow<'a, str>,
+    /// Block trade indicator.
+    #[serde(rename = "BT")]
+    pub is_block_trade: bool,
+    /// Cross sequence number.
+    #[serde(rename = "seq")]
+    pub seq: u64,
 }
 
-/// `"m": true` means the buyer is the market maker (passive), so the aggressor
-/// was the seller — `Side::Sell`. `"m": false` means the seller was passive and
-/// the buyer took the price — `Side::Buy`. Always the taker's perspective.
 impl TryInto<exchange_api::Trade> for TradePayload<'_> {
     type Error = exchange_api::Error;
 
     fn try_into(self) -> Result<exchange_api::Trade, Self::Error> {
         Ok(exchange_api::Trade {
-            exchange: "binance".to_string(),
+            exchange: "bybit".to_string(),
             symbol: self.symbol.to_string(),
             price: self
                 .price
                 .parse::<f64>()
                 .map_err(|err| parse_float_error("price", err))?,
             size: self
-                .quantity
+                .size
                 .parse::<f64>()
-                .map_err(|err| parse_float_error("quantity", err))?,
-            side: if self.is_buyer_market_maker {
-                exchange_api::Side::Sell
-            } else {
-                exchange_api::Side::Buy
+                .map_err(|err| parse_float_error("size", err))?,
+            side: match self.side.as_ref() {
+                "Buy" => exchange_api::Side::Buy,
+                "Sell" => exchange_api::Side::Sell,
+                other => {
+                    return Err(exchange_api::Error::Exchange(format!(
+                        "unknown side: {other}"
+                    )))
+                }
             },
             trade_id: self.trade_id.to_string(),
-            timestamp: DateTime::from_timestamp_millis(self.event_time).ok_or_else(|| {
-                exchange_api::Error::Exchange(
-                    "could not parse Binance returned event_time as valid DateTime<Utc>"
-                        .to_string(),
-                )
-            })?,
+            timestamp: DateTime::from_timestamp_millis(self.fill_timestamp_ms as i64)
+                .ok_or_else(|| {
+                    exchange_api::Error::Exchange(
+                        "could not parse Bybit T as valid DateTime<Utc>".to_string(),
+                    )
+                })?,
         })
     }
 }
-
-// impl TryFrom<TradePayload<'_>> for exchange_api::Trade {
-//     type Error = exchange_api::Error;
-
-//     fn try_from(value: TradePayload<'_>) -> Result<Self, Self::Error> {
-//         value.try_into()
-//     }
-// }
 
 // Stream name: <symbol>@depth OR <symbol>@depth@100ms
 
@@ -216,46 +225,89 @@ pub struct PriceLevel<'a>(
     #[serde(borrow)] pub Cow<'a, str>,
 );
 
-/// REST depth snapshot — used in tests and by local_order_book bootstrap.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct OrderBookPayload<'a> {
-    #[serde(rename = "lastUpdateId")]
-    pub last_update_id: i64,
-    #[serde(borrow)]
-    pub bids: Vec<PriceLevel<'a>>,
-    #[serde(borrow)]
-    pub asks: Vec<PriceLevel<'a>>,
-}
+// Stream name: orderbook
+//
+// "data": {
+//     "s": "BTCUSDT",
+//     "b": [
+//         ...,
+//         [
+//             "16493.50",
+//             "0.006"
+//         ],
+//         [
+//             "16493.00",
+//             "0.100"
+//         ]
+//     ],
+//     "a": [
+//         [
+//             "16611.00",
+//             "0.029"
+//         ],
+//         [
+//             "16612.00",
+//             "0.213"
+//         ],
+//         ...,
+//     ],
+// "u": 18521288,
+// "seq": 7961638724
+// },
+
+// Topic: orderbook.{depth}.{symbol}
+// `data` is the same structure for both snapshot and delta; the outer
+// `type` field (OrderbookUpdateType) distinguishes them.
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct DepthUpdatePayload<'a> {
+    /// Set from the outer CombinedStreamRaw.timestamp_ms after deserialization.
     #[serde(skip)]
+    pub timestamp_ms: u64,
+    #[serde(rename = "s")]
     pub symbol: String,
-    #[serde(rename = "E")]
-    pub event_time: i64,
-    #[serde(rename = "s", borrow)]
-    pub stream_symbol: Cow<'a, str>,
-    #[serde(rename = "U")]
-    pub first_update_id: i64,
-    #[serde(rename = "u")]
-    pub final_update_id: i64,
     #[serde(rename = "b", borrow)]
     pub bids: Vec<PriceLevel<'a>>,
     #[serde(rename = "a", borrow)]
     pub asks: Vec<PriceLevel<'a>>,
+    /// Update ID — monotonically increasing within a symbol.
+    #[serde(rename = "u")]
+    pub update_id: u64,
+    /// Cross sequence number.
+    #[serde(rename = "seq")]
+    pub seq: u64,
 }
+
+// GET /v5/market/instruments-info?category=spot
+//
+// {
+//   "retCode": 0,
+//   "result": {
+//     "category": "spot",
+//     "list": [
+//       { "symbol": "BTCUSDT", "baseCoin": "BTC", "quoteCoin": "USDT", "status": "Trading", ... }
+//     ],
+//     "nextPageCursor": ""
+//   },
+//   "time": 1672712468011
+// }
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct ExchangeInfoPayload<'a> {
+    #[serde(rename = "retCode")]
+    pub ret_code: i32,
     #[serde(borrow)]
-    pub timezone: Cow<'a, str>,
-    #[serde(rename = "serverTime")]
-    pub timestamp: i64,
+    pub result: ExchangeInfoResult<'a>,
+    pub time: i64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+pub struct ExchangeInfoResult<'a> {
     #[serde(borrow)]
-    pub symbols: Vec<SymbolPayload<'a>>,
+    pub list: Vec<SymbolPayload<'a>>,
 }
 
 #[allow(dead_code)]
@@ -263,22 +315,23 @@ pub struct ExchangeInfoPayload<'a> {
 pub struct SymbolPayload<'a> {
     #[serde(borrow)]
     pub symbol: Cow<'a, str>,
-    #[serde(rename = "baseAsset", borrow)]
-    pub base_asset: Cow<'a, str>,
-    #[serde(rename = "quoteAsset", borrow)]
-    pub quote_asset: Cow<'a, str>,
-    #[serde(rename = "baseAssetPrecision")]
-    pub base_precision: i64,
-    #[serde(rename = "quoteAssetPrecision")]
-    pub quote_precision: i64,
+    #[serde(rename = "baseCoin", borrow)]
+    pub base_coin: Cow<'a, str>,
+    #[serde(rename = "quoteCoin", borrow)]
+    pub quote_coin: Cow<'a, str>,
+    #[serde(borrow)]
+    pub status: Cow<'a, str>,
 }
 
 impl Into<exchange_api::SymbolList> for ExchangeInfoPayload<'_> {
     fn into(self) -> exchange_api::SymbolList {
         exchange_api::SymbolList {
-            exchange: "binance".to_string(),
-            updated_at: DateTime::from_timestamp_millis(self.timestamp).unwrap_or_default(), // TODO: Take timezone into account?
-            symbols: self.symbols.into_iter().map(SymbolPayload::into).collect(),
+            exchange: "bybit".to_string(),
+            updated_at: DateTime::from_timestamp_millis(self.time).unwrap_or_default(),
+            symbols: self.result.list.into_iter()
+                .filter(|s| s.status == "Trading")
+                .map(SymbolPayload::into)
+                .collect(),
         }
     }
 }
@@ -287,8 +340,8 @@ impl Into<exchange_api::Symbol> for SymbolPayload<'_> {
     fn into(self) -> exchange_api::Symbol {
         exchange_api::Symbol {
             symbol: self.symbol.to_string(),
-            base: self.base_asset.to_string(),
-            quote: self.quote_asset.to_string(),
+            base: self.base_coin.to_string(),
+            quote: self.quote_coin.to_string(),
         }
     }
 }
@@ -378,218 +431,186 @@ pub enum WsError {
 mod tests {
     use super::*;
 
+    // ── TickerPayload ────────────────────────────────────────────────────────
+
     const TICKER_JSON: &str = r#"{
-        "e": "24hrTicker",
-        "E": 1672515782136,
-        "s": "BNBBTC",
-        "p": "0.0015",
-        "P": "250.00",
-        "w": "0.0018",
-        "x": "0.0009",
-        "c": "0.0025",
-        "Q": "10",
-        "b": "0.0024",
-        "B": "10",
-        "a": "0.0026",
-        "A": "100",
-        "o": "0.0010",
-        "h": "0.0025",
-        "l": "0.0010",
-        "v": "10000",
-        "q": "18",
-        "O": 0,
-        "C": 86400000,
-        "F": 0,
-        "L": 18150,
-        "n": 18151
+        "symbol": "BTCUSDT",
+        "lastPrice": "30000.00",
+        "highPrice24h": "31000.00",
+        "lowPrice24h": "29000.00",
+        "prevPrice24h": "29500.00",
+        "volume24h": "1234.56",
+        "turnover24h": "37000000.00",
+        "price24hPcnt": "1.69",
+        "usdIndexPrice": "30001.00"
     }"#;
 
     #[test]
     fn ticker_deserializes_all_fields() {
         let p: TickerPayload = serde_json::from_str(TICKER_JSON).unwrap();
-        assert_eq!(p.event_type, "24hrTicker");
-        assert_eq!(p.event_time, 1672515782136);
-        assert_eq!(p.symbol, "BNBBTC");
-        assert_eq!(p.price_change, "0.0015");
-        assert_eq!(p.price_change_percent, "250.00");
-        assert_eq!(p.weighted_avg_price, "0.0018");
-        assert_eq!(p.first_trade_price, "0.0009");
-        assert_eq!(p.last_price, "0.0025");
-        assert_eq!(p.last_quantity, "10");
-        assert_eq!(p.best_bid_price, "0.0024");
-        assert_eq!(p.best_bid_quantity, "10");
-        assert_eq!(p.best_ask_price, "0.0026");
-        assert_eq!(p.best_ask_quantity, "100");
-        assert_eq!(p.open_price, "0.0010");
-        assert_eq!(p.high_price, "0.0025");
-        assert_eq!(p.low_price, "0.0010");
-        assert_eq!(p.base_volume, "10000");
-        assert_eq!(p.quote_volume, "18");
-        assert_eq!(p.stats_open_time, 0);
-        assert_eq!(p.stats_close_time, 86400000);
-        assert_eq!(p.first_trade_id, 0);
-        assert_eq!(p.last_trade_id, 18150);
-        assert_eq!(p.total_trades, 18151);
+        assert_eq!(p.symbol, "BTCUSDT");
+        assert_eq!(p.last_price, "30000.00");
+        assert_eq!(p.high_price_24h, "31000.00");
+        assert_eq!(p.low_price_24h, "29000.00");
+        assert_eq!(p.prev_price_24h, "29500.00");
+        assert_eq!(p.volume_24h, "1234.56");
+        assert_eq!(p.turnover_24h, "37000000.00");
+        assert_eq!(p.price_24h_pcnt, "1.69");
+        assert_eq!(p.usd_index_price, "30001.00");
+        assert_eq!(p.timestamp_ms, 0); // set from envelope, not JSON
     }
 
     #[test]
     fn ticker_zero_copy_borrows() {
         let input = TICKER_JSON.to_owned();
         let p: TickerPayload = serde_json::from_str(&input).unwrap();
-
         let base = input.as_ptr() as usize;
         let limit = base + input.len();
-
-        // Every Cow field should borrow from the input buffer.
-        fn assert_borrowed<'a>(cow: &Cow<'a, str>, base: usize, limit: usize, label: &str) {
+        for (field, cow) in [
+            ("symbol", &p.symbol),
+            ("last_price", &p.last_price),
+            ("high_price_24h", &p.high_price_24h),
+        ] {
             match cow {
-                Cow::Borrowed(s) => {
+                std::borrow::Cow::Borrowed(s) => {
                     let ptr = s.as_ptr() as usize;
-                    assert!(
-                        ptr >= base && ptr < limit,
-                        "{label} ptr {ptr:#x} outside [{base:#x}, {limit:#x})"
-                    );
+                    assert!(ptr >= base && ptr < limit, "{field} was not borrowed");
                 }
-                _ => panic!("{label} was not borrowed"),
+                _ => panic!("{field} was not borrowed"),
             }
         }
-
-        assert_borrowed(&p.event_type, base, limit, "event_type");
-        assert_borrowed(&p.symbol, base, limit, "symbol");
-        assert_borrowed(&p.price_change, base, limit, "price_change");
-        assert_borrowed(&p.last_price, base, limit, "last_price");
-        assert_borrowed(&p.best_bid_price, base, limit, "best_bid_price");
-        assert_borrowed(&p.best_ask_price, base, limit, "best_ask_price");
     }
 
-    const TRADE_JSON: &str = r#"{
-        "e": "trade",
-        "E": 1672515782136,
-        "s": "BNBBTC",
-        "t": 12345,
-        "p": "0.001",
-        "q": "100",
-        "T": 1672515782136,
-        "m": true,
-        "M": true
-    }"#;
+    // ── TradePayload ─────────────────────────────────────────────────────────
+
+    const TRADE_ARRAY_JSON: &str = r#"[
+        {
+            "T": 1672304486865,
+            "s": "BTCUSDT",
+            "S": "Buy",
+            "v": "0.001",
+            "p": "16578.50",
+            "i": "20f43950-d8dd-5b31-9112-a178eb6023af",
+            "BT": false,
+            "seq": 1783284617
+        }
+    ]"#;
 
     #[test]
     fn trade_deserializes_all_fields() {
-        let p: TradePayload = serde_json::from_str(TRADE_JSON).unwrap();
-        assert_eq!(p.event_type, "trade");
-        assert_eq!(p.event_time, 1672515782136);
-        assert_eq!(p.symbol, "BNBBTC");
-        assert_eq!(p.trade_id, 12345);
-        assert_eq!(p.price, "0.001");
-        assert_eq!(p.quantity, "100");
-        assert_eq!(p.trade_time, 1672515782136);
-        assert!(p.is_buyer_market_maker);
-        assert!(p.ignore);
-    }
-
-    #[test]
-    fn trade_m_is_buyer_market_maker() {
-        let json =
-            r#"{"e":"trade","E":1,"s":"BTCUSDT","t":1,"p":"1","q":"1","T":1,"m":false,"M":false}"#;
-        let p: TradePayload = serde_json::from_str(json).unwrap();
-        assert!(!p.is_buyer_market_maker);
+        let trades: Vec<TradePayload> = serde_json::from_str(TRADE_ARRAY_JSON).unwrap();
+        assert_eq!(trades.len(), 1);
+        let p = &trades[0];
+        assert_eq!(p.fill_timestamp_ms, 1672304486865);
+        assert_eq!(p.symbol, "BTCUSDT");
+        assert_eq!(p.side, "Buy");
+        assert_eq!(p.size, "0.001");
+        assert_eq!(p.price, "16578.50");
+        assert_eq!(p.trade_id, "20f43950-d8dd-5b31-9112-a178eb6023af");
+        assert!(!p.is_block_trade);
+        assert_eq!(p.seq, 1783284617);
+        assert_eq!(p.timestamp_ms, 0); // set from envelope
     }
 
     #[test]
     fn trade_zero_copy_borrows() {
-        let input = TRADE_JSON.to_owned();
-        let p: TradePayload = serde_json::from_str(&input).unwrap();
-
+        let input = TRADE_ARRAY_JSON.to_owned();
+        let trades: Vec<TradePayload> = serde_json::from_str(&input).unwrap();
         let base = input.as_ptr() as usize;
         let limit = base + input.len();
-
+        let p = &trades[0];
         match &p.price {
-            Cow::Borrowed(s) => {
+            std::borrow::Cow::Borrowed(s) => {
                 let ptr = s.as_ptr() as usize;
-                assert!(
-                    ptr >= base && ptr < limit,
-                    "price ptr {ptr:#x} outside range"
-                );
+                assert!(ptr >= base && ptr < limit, "price was not borrowed");
             }
             _ => panic!("price was not borrowed"),
         }
-        match &p.quantity {
-            Cow::Borrowed(s) => {
-                let ptr = s.as_ptr() as usize;
-                assert!(
-                    ptr >= base && ptr < limit,
-                    "quantity ptr {ptr:#x} outside range"
-                );
-            }
-            _ => panic!("quantity was not borrowed"),
-        }
     }
 
-    const ORDERBOOK_JSON: &str = r#"{
-        "lastUpdateId": 160,
-        "bids": [["0.0024", "10"], ["0.0023", "5"]],
-        "asks": [["0.0026", "100"]]
+    // ── DepthUpdatePayload ───────────────────────────────────────────────────
+
+    const DEPTH_SNAPSHOT_JSON: &str = r#"{
+        "s": "BTCUSDT",
+        "b": [["16493.50", "0.006"], ["16493.00", "0.100"]],
+        "a": [["16611.00", "0.029"], ["16612.00", "0.213"]],
+        "u": 18521288,
+        "seq": 7961638724
     }"#;
 
     #[test]
-    fn orderbook_deserializes_all_fields() {
-        let p: OrderBookPayload = serde_json::from_str(ORDERBOOK_JSON).unwrap();
-        assert_eq!(p.last_update_id, 160);
+    fn depth_snapshot_deserializes() {
+        let p: DepthUpdatePayload = serde_json::from_str(DEPTH_SNAPSHOT_JSON).unwrap();
+        assert_eq!(p.symbol, "BTCUSDT");
         assert_eq!(p.bids.len(), 2);
-        assert_eq!(p.asks.len(), 1);
-
-        assert_eq!(p.bids[0].0, "0.0024");
-        assert_eq!(p.bids[0].1, "10");
-        assert_eq!(p.bids[1].0, "0.0023");
-        assert_eq!(p.bids[1].1, "5");
-
-        assert_eq!(p.asks[0].0, "0.0026");
-        assert_eq!(p.asks[0].1, "100");
+        assert_eq!(p.asks.len(), 2);
+        assert_eq!(p.bids[0].0, "16493.50");
+        assert_eq!(p.bids[0].1, "0.006");
+        assert_eq!(p.asks[0].0, "16611.00");
+        assert_eq!(p.update_id, 18521288);
+        assert_eq!(p.seq, 7961638724);
+        assert_eq!(p.timestamp_ms, 0); // set from envelope
     }
 
     #[test]
-    fn orderbook_empty_arrays() {
-        let json = r#"{"lastUpdateId":0,"bids":[],"asks":[]}"#;
-        let p: OrderBookPayload = serde_json::from_str(json).unwrap();
+    fn depth_delta_empty_arrays() {
+        let json = r#"{"s":"BTCUSDT","b":[],"a":[],"u":18521289,"seq":7961638725}"#;
+        let p: DepthUpdatePayload = serde_json::from_str(json).unwrap();
         assert!(p.bids.is_empty());
         assert!(p.asks.is_empty());
+        assert_eq!(p.update_id, 18521289);
+    }
+
+    // ── ExchangeInfoPayload ──────────────────────────────────────────────────
+
+    const EXCHANGE_INFO_JSON: &str = r#"{
+        "retCode": 0,
+        "result": {
+            "category": "spot",
+            "list": [
+                {
+                    "symbol": "BTCUSDT",
+                    "baseCoin": "BTC",
+                    "quoteCoin": "USDT",
+                    "status": "Trading"
+                },
+                {
+                    "symbol": "ETHUSDT",
+                    "baseCoin": "ETH",
+                    "quoteCoin": "USDT",
+                    "status": "Closed"
+                }
+            ],
+            "nextPageCursor": ""
+        },
+        "time": 1672712468011
+    }"#;
+
+    #[test]
+    fn exchange_info_deserializes() {
+        let p: ExchangeInfoPayload = serde_json::from_str(EXCHANGE_INFO_JSON).unwrap();
+        assert_eq!(p.ret_code, 0);
+        assert_eq!(p.time, 1672712468011);
+        assert_eq!(p.result.list.len(), 2);
+        assert_eq!(p.result.list[0].symbol, "BTCUSDT");
+        assert_eq!(p.result.list[0].base_coin, "BTC");
+        assert_eq!(p.result.list[0].quote_coin, "USDT");
+        assert_eq!(p.result.list[0].status, "Trading");
     }
 
     #[test]
-    fn orderbook_zero_copy_borrows() {
-        let input = ORDERBOOK_JSON.to_owned();
-        let p: OrderBookPayload = serde_json::from_str(&input).unwrap();
-
-        let base = input.as_ptr() as usize;
-        let limit = base + input.len();
-
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..p.bids.len() {
-            let cow0 = &p.bids[i].0;
-            let cow1 = &p.bids[i].1;
-            match cow0 {
-                Cow::Borrowed(s) => {
-                    let ptr = s.as_ptr() as usize;
-                    assert!(
-                        ptr >= base && ptr < limit,
-                        "bids[{i}].0 ptr {ptr:#x} outside range"
-                    );
-                }
-                _ => panic!("bids[{i}].0 was not borrowed"),
-            }
-            match cow1 {
-                Cow::Borrowed(s) => {
-                    let ptr = s.as_ptr() as usize;
-                    assert!(
-                        ptr >= base && ptr < limit,
-                        "bids[{i}].1 ptr {ptr:#x} outside range"
-                    );
-                }
-                _ => panic!("bids[{i}].1 was not borrowed"),
-            }
-        }
+    fn exchange_info_into_symbol_list_filters_non_trading() {
+        let p: ExchangeInfoPayload = serde_json::from_str(EXCHANGE_INFO_JSON).unwrap();
+        let list: exchange_api::SymbolList = p.into();
+        assert_eq!(list.exchange, "bybit");
+        // "Closed" symbol should be filtered out
+        assert_eq!(list.symbols.len(), 1);
+        assert_eq!(list.symbols[0].symbol, "BTCUSDT");
+        assert_eq!(list.symbols[0].base, "BTC");
+        assert_eq!(list.symbols[0].quote, "USDT");
     }
+
+    // ── WsErrorPayload ───────────────────────────────────────────────────────
 
     #[test]
     fn error_code_0_unknown_property() {

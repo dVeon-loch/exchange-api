@@ -1,0 +1,15 @@
+[package]
+name = "examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "multi-exchange"
+path = "src/bin/multi_exchange.rs"
+
+[dependencies]
+exchange-api = { path = "../exchange-api" }
+binance = { path = "../binance" }
+bybit = { path = "../bybit" }
+tokio = { workspace = true }

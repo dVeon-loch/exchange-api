@@ -216,18 +216,6 @@ pub struct PriceLevel<'a>(
     #[serde(borrow)] pub Cow<'a, str>,
 );
 
-/// REST depth snapshot — used in tests and by local_order_book bootstrap.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-pub struct OrderBookPayload<'a> {
-    #[serde(rename = "lastUpdateId")]
-    pub last_update_id: i64,
-    #[serde(borrow)]
-    pub bids: Vec<PriceLevel<'a>>,
-    #[serde(borrow)]
-    pub asks: Vec<PriceLevel<'a>>,
-}
-
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct DepthUpdatePayload<'a> {

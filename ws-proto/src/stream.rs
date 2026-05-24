@@ -41,8 +41,8 @@ pub struct WsStream {
     inner: tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
-    _ping_interval: Duration,
-    _pong_timeout: Duration,
+    /// Fires periodically to send keepalive pings. `None` = no auto-ping.
+    ping_ticker: Option<tokio::time::Interval>,
 }
 
 impl WsStream {
@@ -50,9 +50,11 @@ impl WsStream {
     pub async fn connect(
         url: &str,
         headers: &[(String, String)],
-        ping_interval: Duration,
+        ping_interval: Option<Duration>,
         pong_timeout: Duration,
     ) -> Result<Self, Error> {
+        let _ = pong_timeout; // reserved for future pong-timeout enforcement
+
         let (inner, _) = if headers.is_empty() {
             tokio_tungstenite::connect_async(url).await?
         } else {
@@ -71,11 +73,12 @@ impl WsStream {
             tokio_tungstenite::connect_async(req).await?
         };
 
-        Ok(Self {
-            inner,
-            _ping_interval: ping_interval,
-            _pong_timeout: pong_timeout,
-        })
+        // Start the ticker after one full period so no ping fires immediately.
+        let ping_ticker = ping_interval.map(|d| {
+            tokio::time::interval_at(tokio::time::Instant::now() + d, d)
+        });
+
+        Ok(Self { inner, ping_ticker })
     }
 
     /// Send a message on the stream.
@@ -109,10 +112,19 @@ impl WsStream {
                         None => return Ok(None),
                     }
                 }
-                _ = tokio::time::sleep(self._pong_timeout) => {
+                _ = Self::next_ping_tick(&mut self.ping_ticker) => {
+                    self.inner.send(TungsteniteMsg::Ping(vec![].into())).await?;
                     continue;
                 }
             }
+        }
+    }
+
+    /// Resolves on the next ping tick, or never if pinging is disabled.
+    async fn next_ping_tick(ticker: &mut Option<tokio::time::Interval>) {
+        match ticker {
+            Some(t) => { t.tick().await; }
+            None => std::future::pending().await,
         }
     }
 

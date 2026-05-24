@@ -4,8 +4,8 @@
 //! → CombinedStreamEvent.  The remaining wiring (CombinedStreamEvent → generic
 //! StreamData, output routing) belongs in ExchangeApi::init() — see TODOs below.
 
-use binance::parsers::{CombinedStreamEvent, CombinedStreamRaw};
-use binance::BinanceSpot;
+use bybit::parsers::{CombinedStreamEvent, CombinedStreamRaw};
+use bybit::{BybitSpot, SubscriptionRequest};
 use exchange_api::prelude::*;
 use exchange_api::Exchange;
 use ws_proto::WsClient;
@@ -15,26 +15,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Build exchange configuration ──────────────────────────────────────────
     // TODO: This should use ExchangeApiBuilder + init() once implemented.
 
-    let exchange = BinanceSpot::new();
-    let symbols = vec!["bnbbtc".to_string()];
+    let exchange = BybitSpot::new();
+    let symbols = vec!["BTCUSDT".to_string()];
     let streams = &[
         StreamKind::Ticker,
         StreamKind::Trade,
-        StreamKind::OrderBook { depth: 10 },
+        StreamKind::OrderBook { depth: 50 },
     ];
 
     // ── Connect ───────────────────────────────────────────────────────────────
     // TODO: This connection loop belongs in ExchangeApi::init().
 
-    let endpoints = exchange.ws_endpoints(&symbols, streams, None);
-    let url = &endpoints[0].url;
+    let endpoint = &exchange.ws_endpoints(&symbols, streams, None)[0];
+    let url = &endpoint.url;
     println!("Connecting to: {url}");
 
     let config = ws_proto::WsConfig::new(url);
     let mut client = WsClient::connect(config).await?;
 
-    // Binance combined stream encodes all subscriptions in the URL, so no
-    // subscribe message is needed.
+    // Example subscription object:
+    // {
+    //     "req_id": "test", // optional
+    //     "op": "subscribe",
+    //     "args": [
+    //         "orderbook.1.BTCUSDT",
+    //         "publicTrade.BTCUSDT",
+    //         "orderbook.1.ETHUSDT"
+    //     ]
+    // }
+
+    if let exchange_api::SubscriptionMethod::JsonArgs(args) = &endpoint.subscription {
+        println!("Sending subscriptions: {:?}", args);
+        client
+            .send(ws_proto::WsMessage::Text(serde_json::to_string(
+                &SubscriptionRequest::new(args.clone()),
+            )?))
+            .await?;
+        if let Some(initial_message) = client.recv().await? {
+            let text = match initial_message {
+                ws_proto::WsMessage::Text(t) => t.to_string(),
+                ws_proto::WsMessage::Binary(b) => String::from_utf8(b)?,
+                _ => "Invalid message received".to_string(),
+            };
+            println!("Initial subscription message: {text}")
+        }
+    }
 
     // ── Receive and parse ─────────────────────────────────────────────────────
     // TODO: Replace raw event with Exchange::parse() + StreamData routing.
@@ -47,6 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => continue,
         };
 
+        // println!("Text received: {text}");
+
         let raw: CombinedStreamRaw = serde_json::from_str(&text)?;
         let event: CombinedStreamEvent<'_> = raw.parse()?;
 
@@ -54,20 +81,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             CombinedStreamEvent::Ticker(p) => {
                 println!("[{count}] ticker | {}  last={}", p.symbol, p.last_price);
             }
-            CombinedStreamEvent::Trade(p) => {
-                println!(
-                    "[{count}] trade  | {}  price={}  qty={}",
-                    p.symbol, p.price, p.quantity
-                );
+            CombinedStreamEvent::Trade(trades) => {
+                if let Some(p) = trades.first() {
+                    println!(
+                        "[{count}] trade  | {}  price={}  qty={}",
+                        p.symbol, p.price, p.size
+                    );
+                }
             }
-            CombinedStreamEvent::DepthUpdate(p) => {
+            CombinedStreamEvent::DepthUpdate(_, p) => {
                 println!(
-                    "[{count}] diff   | {}  bid_updates={}  ask_updates={}  seq=[{},{}]",
+                    "[{count}] orderbook   | {}  bid_updates={}  ask_updates={}  update_id={}  seq={}",
                     p.symbol,
                     p.bids.len(),
                     p.asks.len(),
-                    p.first_update_id,
-                    p.final_update_id
+                    p.update_id,
+                    p.seq
                 );
             }
         }

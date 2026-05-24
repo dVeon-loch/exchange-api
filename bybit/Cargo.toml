@@ -1,0 +1,25 @@
+[package]
+name = "bybit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait.workspace = true
+exchange-api = { path = "../exchange-api", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+ws-proto = { path = "../ws-proto" }
+tokio = { workspace = true }
+ordered-float = "4"
+reqwest.workspace = true
+
+[features]
+default = ["spot"]
+spot = []
+futures = []
+
+[[bin]]
+name = "ws-test"
+path = "src/bin/ws_test.rs"

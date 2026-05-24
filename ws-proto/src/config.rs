@@ -11,8 +11,9 @@ pub struct WsConfig {
 
     /// How often to send pings to keep the connection alive.
     ///
-    /// Default: 30 seconds.
-    pub ping_interval: Duration,
+    /// `None` (the default) disables automatic pings entirely.
+    /// Set via [`WsConfig::with_ping_interval`].
+    pub ping_interval: Option<Duration>,
 
     /// Maximum time to wait for a pong response before considering
     /// the connection dead.
@@ -29,7 +30,7 @@ impl WsConfig {
         Self {
             url: url.into(),
             headers: Vec::new(),
-            ping_interval: Duration::from_secs(30),
+            ping_interval: None,
             pong_timeout: Duration::from_secs(10),
             reconnect: ReconnectConfig::default(),
         }
@@ -41,7 +42,7 @@ impl WsConfig {
     }
 
     pub fn with_ping_interval(mut self, interval: Duration) -> Self {
-        self.ping_interval = interval;
+        self.ping_interval = Some(interval);
         self
     }
 

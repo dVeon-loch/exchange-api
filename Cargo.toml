@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["exchange-api", "binance", "fix-proto", "ws-proto"]
+members = ["exchange-api", "binance", "bybit", "okx", "fix-proto", "ws-proto", "examples"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

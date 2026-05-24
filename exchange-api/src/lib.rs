@@ -13,7 +13,7 @@ pub use http::{
     ReqwestBackend,
 };
 pub use runtime::{ExchangeApi, ExchangeApiHandle};
-pub use traits::Exchange;
+pub use traits::{Exchange, SubscriptionMethod, WsEndpoint};
 pub use types::*;
 
 /// Convenience re-exports for downstream users.

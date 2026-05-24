@@ -34,7 +34,7 @@ impl UpdateRate {
 #[derive(Clone, Debug)]
 pub enum StreamKind {
     Trade,
-    OrderBook { depth: usize },
+    OrderBook { depth: usize }, // TODO: Refactor this to make it impossible to select an incorrect depth level per-exchange
     Ticker,
 }
 
