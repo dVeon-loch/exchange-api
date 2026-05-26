@@ -51,9 +51,7 @@ impl ExchangeApiBuilder {
     /// Set the target update rate for streamed data.
     /// Exchanges will match this to their supported rates where possible.
     pub fn update_rate(mut self, duration: Duration) -> Self {
-        self.update_rate = Some(UpdateRate {
-            duration,
-        });
+        self.update_rate = Some(UpdateRate { duration });
         self
     }
 

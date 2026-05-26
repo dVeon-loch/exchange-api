@@ -205,12 +205,13 @@ impl TryInto<exchange_api::Trade> for TradePayload<'_> {
                 }
             },
             trade_id: self.trade_id.to_string(),
-            timestamp: DateTime::from_timestamp_millis(self.fill_timestamp_ms as i64)
-                .ok_or_else(|| {
+            timestamp: DateTime::from_timestamp_millis(self.fill_timestamp_ms as i64).ok_or_else(
+                || {
                     exchange_api::Error::Exchange(
                         "could not parse Bybit T as valid DateTime<Utc>".to_string(),
                     )
-                })?,
+                },
+            )?,
         })
     }
 }
@@ -328,7 +329,10 @@ impl Into<exchange_api::SymbolList> for ExchangeInfoPayload<'_> {
         exchange_api::SymbolList {
             exchange: "bybit".to_string(),
             updated_at: DateTime::from_timestamp_millis(self.time).unwrap_or_default(),
-            symbols: self.result.list.into_iter()
+            symbols: self
+                .result
+                .list
+                .into_iter()
                 .filter(|s| s.status == "Trading")
                 .map(SymbolPayload::into)
                 .collect(),

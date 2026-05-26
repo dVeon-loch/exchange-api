@@ -1,9 +1,20 @@
 use chrono::{DateTime, Utc};
 use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
+
+#[cfg(target_arch = "wasm32")]
+use futures::channel::oneshot;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::sync::oneshot;
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
 use crate::parsers::{DepthUpdatePayload, PriceLevel};
+
+#[cfg(not(target_arch = "wasm32"))]
 use exchange_api::http::{HttpClient, HttpRequest, ReqwestBackend};
 
 /// REST depth snapshot response from Binance.
@@ -39,7 +50,7 @@ pub struct LocalOrderBook {
     pub asks: BTreeMap<OrderedFloat<f64>, f64>,
     state: ObState,
     sequence: u64,
-    last_snapshot_time: Option<std::time::Instant>,
+    last_snapshot_time: Option<Instant>,
 }
 
 impl LocalOrderBook {
@@ -93,11 +104,12 @@ impl LocalOrderBook {
                 self.apply_owned_update(&owned)?;
                 self.sequence += 1;
 
-                let emit_snapshot = self.last_snapshot_time
+                let emit_snapshot = self
+                    .last_snapshot_time
                     .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(10));
 
                 if emit_snapshot {
-                    self.last_snapshot_time = Some(std::time::Instant::now());
+                    self.last_snapshot_time = Some(Instant::now());
                     Ok(Some(exchange_api::StreamData::OrderBook(self.snapshot())))
                 } else {
                     Ok(Some(exchange_api::StreamData::OrderBookDelta(
@@ -113,7 +125,12 @@ impl LocalOrderBook {
                 if snapshot_rx.is_none() {
                     let symbol = self.symbol.clone();
                     let (tx, rx) = oneshot::channel();
+                    #[cfg(not(target_arch = "wasm32"))]
                     tokio::spawn(async move {
+                        let _ = tx.send(fetch_depth_snapshot(&symbol).await);
+                    });
+                    #[cfg(target_arch = "wasm32")]
+                    wasm_bindgen_futures::spawn_local(async move {
                         let _ = tx.send(fetch_depth_snapshot(&symbol).await);
                     });
                     snapshot_rx = Some(rx);
@@ -121,15 +138,32 @@ impl LocalOrderBook {
 
                 buffer.push(owned);
 
-                match snapshot_rx.as_mut().unwrap().try_recv() {
-                    Ok(Ok(snapshot)) => {
+                // Normalize try_recv across platforms:
+                // tokio::sync::oneshot: try_recv() -> Result<T, TryRecvError>   Ok(v) = got it, Err = empty/closed
+                // futures::channel::oneshot: try_recv() -> Result<Option<T>, Canceled>  Ok(Some) = got it, Ok(None)/Err = empty/closed
+                #[cfg(not(target_arch = "wasm32"))]
+                let recv_result: Option<
+                    Result<DepthSnapshot, exchange_api::Error>,
+                > = snapshot_rx.as_mut().unwrap().try_recv().ok();
+                #[cfg(target_arch = "wasm32")]
+                let recv_result: Option<
+                    Result<DepthSnapshot, exchange_api::Error>,
+                > = snapshot_rx.as_mut().unwrap().try_recv().ok().flatten();
+
+                match recv_result {
+                    Some(Ok(snapshot)) => {
                         let first_u = buffer.first().map(|u| u.first_update_id).unwrap_or(0);
 
                         // Snapshot predates our buffer — re-fetch.
                         if snapshot.last_update_id < first_u {
                             let symbol = self.symbol.clone();
                             let (tx, rx) = oneshot::channel();
+                            #[cfg(not(target_arch = "wasm32"))]
                             tokio::spawn(async move {
+                                let _ = tx.send(fetch_depth_snapshot(&symbol).await);
+                            });
+                            #[cfg(target_arch = "wasm32")]
+                            wasm_bindgen_futures::spawn_local(async move {
                                 let _ = tx.send(fetch_depth_snapshot(&symbol).await);
                             });
                             self.state = ObState::Buffering {
@@ -176,14 +210,19 @@ impl LocalOrderBook {
                             self.sequence += 1;
                         }
                         // Always emit a full snapshot after initial sync.
-                        self.last_snapshot_time = Some(std::time::Instant::now());
+                        self.last_snapshot_time = Some(Instant::now());
                         Ok(Some(exchange_api::StreamData::OrderBook(self.snapshot())))
                     }
-                    Ok(Err(_)) => {
+                    Some(Err(_)) => {
                         // Fetch failed — re-attempt.
                         let symbol = self.symbol.clone();
                         let (tx, rx) = oneshot::channel();
+                        #[cfg(not(target_arch = "wasm32"))]
                         tokio::spawn(async move {
+                            let _ = tx.send(fetch_depth_snapshot(&symbol).await);
+                        });
+                        #[cfg(target_arch = "wasm32")]
+                        wasm_bindgen_futures::spawn_local(async move {
                             let _ = tx.send(fetch_depth_snapshot(&symbol).await);
                         });
                         self.state = ObState::Buffering {
@@ -192,7 +231,7 @@ impl LocalOrderBook {
                         };
                         Ok(None)
                     }
-                    Err(_) => {
+                    None => {
                         // Still waiting for snapshot.
                         self.state = ObState::Buffering {
                             buffer,
@@ -314,6 +353,7 @@ impl LocalOrderBook {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn fetch_depth_snapshot(symbol: &str) -> Result<DepthSnapshot, exchange_api::Error> {
     let client = HttpClient::new(ReqwestBackend::new()?);
     let resp = client
@@ -324,6 +364,23 @@ pub async fn fetch_depth_snapshot(symbol: &str) -> Result<DepthSnapshot, exchang
         )
         .await?;
     resp.json()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn fetch_depth_snapshot(symbol: &str) -> Result<DepthSnapshot, exchange_api::Error> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .get("https://api.binance.com/api/v3/depth")
+        .query(&[
+            ("symbol", symbol.to_uppercase()),
+            ("limit", "5000".to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| exchange_api::Error::Transport(e.to_string()))?;
+    resp.json::<DepthSnapshot>()
+        .await
+        .map_err(|e| exchange_api::Error::Transport(e.to_string()))
 }
 
 fn owned_update(u: &DepthUpdatePayload<'_>) -> Result<BufferedUpdate, exchange_api::Error> {

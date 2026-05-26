@@ -11,15 +11,25 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 ws-proto = { path = "../ws-proto" }
-tokio = { workspace = true }
 ordered-float = "4"
-reqwest.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+wasm-bindgen-futures = "0.4"
+futures = { workspace = true }
+web-time = "1"
 
 [features]
 default = ["spot"]
 spot = []
 futures = []
+native-bin = []
 
 [[bin]]
 name = "ws-test"
 path = "src/bin/ws_test.rs"
+required-features = ["native-bin"]

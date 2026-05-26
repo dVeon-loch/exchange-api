@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use exchange_api::runtime::ExchangeName;
 use exchange_api::types::UpdateRate;
-use exchange_api::{Exchange, SubscriptionMethod, WsEndpoint};
 use exchange_api::{prelude::*, SymbolList};
+use exchange_api::{Exchange, SubscriptionMethod, WsEndpoint};
 
 use crate::local_order_book::LocalOrderBook;
 use crate::parsers::CombinedStreamRaw;
@@ -89,7 +89,8 @@ static WS_OUTGOING_LIMIT_PER_S: u8 = 5;
 #[expect(dead_code)]
 static MAX_STREAMS_PER_CONN: u16 = 1024;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Exchange for BinanceSpot {
     fn name(&self) -> ExchangeName {
         ExchangeName::Binance

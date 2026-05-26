@@ -219,12 +219,18 @@ impl LocalOrderBook {
             .bids
             .iter()
             .rev()
-            .map(|(p, &q)| exchange_api::PriceLevel { price: p.0, size: q })
+            .map(|(p, &q)| exchange_api::PriceLevel {
+                price: p.0,
+                size: q,
+            })
             .collect();
         let asks: Vec<exchange_api::PriceLevel> = self
             .asks
             .iter()
-            .map(|(p, &q)| exchange_api::PriceLevel { price: p.0, size: q })
+            .map(|(p, &q)| exchange_api::PriceLevel {
+                price: p.0,
+                size: q,
+            })
             .collect();
 
         let best_bid = bids.first().map_or(0.0, |l| l.price);
@@ -234,8 +240,8 @@ impl LocalOrderBook {
         let ask_depth: f64 = asks.iter().map(|l| l.size).sum();
 
         // Timestamp from the most recent depth update event (E field).
-        let time = DateTime::from_timestamp_millis(self.last_event_time)
-            .unwrap_or_else(|| Utc::now());
+        let time =
+            DateTime::from_timestamp_millis(self.last_event_time).unwrap_or_else(|| Utc::now());
 
         exchange_api::OrderBookSnapshot {
             exchange: "binance".to_string(),
@@ -279,11 +285,11 @@ fn parse_levels(levels: &[PriceLevel<'_>]) -> Result<Vec<(f64, f64)>, exchange_a
 }
 
 fn parse_level(price_str: &str, qty_str: &str) -> Result<(f64, f64), exchange_api::Error> {
-    let price = price_str.parse::<f64>().map_err(|e| {
-        exchange_api::Error::Exchange(format!("bad price '{}': {}", price_str, e))
-    })?;
-    let qty = qty_str.parse::<f64>().map_err(|e| {
-        exchange_api::Error::Exchange(format!("bad qty '{}': {}", qty_str, e))
-    })?;
+    let price = price_str
+        .parse::<f64>()
+        .map_err(|e| exchange_api::Error::Exchange(format!("bad price '{}': {}", price_str, e)))?;
+    let qty = qty_str
+        .parse::<f64>()
+        .map_err(|e| exchange_api::Error::Exchange(format!("bad qty '{}': {}", qty_str, e)))?;
     Ok((price, qty))
 }

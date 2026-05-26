@@ -4,12 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { workspace = true }
-tokio-tungstenite = { workspace = true }
-futures-util = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 bytes = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
 fastrand = { workspace = true }
 http = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-net = { version = "0.6" }
+gloo-timers = { version = "0.3", features = ["futures"] }
+futures = { workspace = true }

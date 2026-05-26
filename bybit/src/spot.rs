@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use exchange_api::prelude::*;
 use exchange_api::runtime::ExchangeName;
 use exchange_api::types::UpdateRate;
-use exchange_api::prelude::*;
 use exchange_api::{Exchange, SubscriptionMethod, WsEndpoint};
 
 use crate::local_order_book::LocalOrderBook;
@@ -56,7 +56,11 @@ impl BybitSpot {
                         .min_by_key(|&&d| d.abs_diff(*depth))
                         .unwrap();
                     for symbol in symbols {
-                        subscriptions.push(format!("orderbook.{}.{}", snapped, symbol.to_uppercase()));
+                        subscriptions.push(format!(
+                            "orderbook.{}.{}",
+                            snapped,
+                            symbol.to_uppercase()
+                        ));
                     }
                 }
                 StreamKind::Ticker => {
@@ -82,7 +86,8 @@ static WS_OUTGOING_LIMIT_PER_S: u8 = 5;
 #[expect(dead_code)]
 static MAX_STREAMS_PER_CONN: u16 = 1024;
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Exchange for BybitSpot {
     fn name(&self) -> ExchangeName {
         ExchangeName::Bybit
@@ -118,12 +123,10 @@ impl Exchange for BybitSpot {
             CombinedStreamEvent::Ticker(ticker) => {
                 Ok(vec![exchange_api::StreamData::Ticker(ticker.try_into()?)])
             }
-            CombinedStreamEvent::Trade(trades) => {
-                trades
-                    .into_iter()
-                    .map(|t| t.try_into().map(exchange_api::StreamData::Trade))
-                    .collect()
-            }
+            CombinedStreamEvent::Trade(trades) => trades
+                .into_iter()
+                .map(|t| t.try_into().map(exchange_api::StreamData::Trade))
+                .collect(),
             CombinedStreamEvent::DepthUpdate(update_type, update) => {
                 let mut books = self.order_books.lock().unwrap();
                 let ob = books

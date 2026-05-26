@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use exchange_api::runtime::ExchangeName;
 use exchange_api::types::UpdateRate;
-use exchange_api::{Exchange, SubscriptionMethod, WsEndpoint};
 use exchange_api::{prelude::*, SymbolList};
+use exchange_api::{Exchange, SubscriptionMethod, WsEndpoint};
 
 use crate::local_order_book::LocalOrderBook;
 use crate::parsers::CombinedStreamRaw;

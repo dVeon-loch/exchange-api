@@ -1,5 +1,5 @@
+use std::io;
 use thiserror::Error;
-use tokio::io;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -31,6 +31,14 @@ pub enum Error {
     #[error("Io error: {0}")]
     Io(#[from] io::Error),
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[error("Thread join error: {0}")]
     ThreadJoin(#[from] tokio::task::JoinError),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Error::Transport(e.to_string())
+    }
 }

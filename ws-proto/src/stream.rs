@@ -74,9 +74,8 @@ impl WsStream {
         };
 
         // Start the ticker after one full period so no ping fires immediately.
-        let ping_ticker = ping_interval.map(|d| {
-            tokio::time::interval_at(tokio::time::Instant::now() + d, d)
-        });
+        let ping_ticker =
+            ping_interval.map(|d| tokio::time::interval_at(tokio::time::Instant::now() + d, d));
 
         Ok(Self { inner, ping_ticker })
     }
@@ -123,7 +122,9 @@ impl WsStream {
     /// Resolves on the next ping tick, or never if pinging is disabled.
     async fn next_ping_tick(ticker: &mut Option<tokio::time::Interval>) {
         match ticker {
-            Some(t) => { t.tick().await; }
+            Some(t) => {
+                t.tick().await;
+            }
             None => std::future::pending().await,
         }
     }

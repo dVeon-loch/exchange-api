@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init()
         .await?;
 
-    println!("{:<8}  {:<9}  {:<10}  {}", "exchange", "kind", "symbol", "data");
+    println!(
+        "{:<8}  {:<9}  {:<10}  {}",
+        "exchange", "kind", "symbol", "data"
+    );
     println!("{}", "-".repeat(72));
 
     loop {
@@ -51,6 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     StreamData::OrderBook(ob) => println!(
                         "{:<8}  {:<9}  {:<10}  bid={:<12.2}  ask={:<12.2}  spread={:.2}",
                         exchange, "orderbook", sym, ob.best_bid, ob.best_ask, ob.spread,
+                    ),
+                    StreamData::OrderBookDelta(d) => println!(
+                        "{:<8}  {:<9}  {:<10}  bid={:<12.2}  ask={:<12.2}  spread={:.2}",
+                        exchange, "ob_delta", sym, d.best_bid, d.best_ask, d.spread,
                     ),
                 }
             }

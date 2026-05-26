@@ -2,6 +2,11 @@ use chrono::{DateTime, Utc};
 use ordered_float::OrderedFloat;
 use std::collections::BTreeMap;
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
 use crate::parsers::{DepthUpdatePayload, OrderbookUpdateType, PriceLevel};
 
 pub struct LocalOrderBook {
@@ -11,7 +16,7 @@ pub struct LocalOrderBook {
     pub bids: BTreeMap<OrderedFloat<f64>, f64>,
     pub asks: BTreeMap<OrderedFloat<f64>, f64>,
     sequence: u64,
-    last_snapshot_time: Option<std::time::Instant>,
+    last_snapshot_time: Option<Instant>,
 }
 
 impl LocalOrderBook {
@@ -78,7 +83,7 @@ impl LocalOrderBook {
                 .map_or(true, |t| t.elapsed() >= std::time::Duration::from_secs(10));
 
         if emit_snapshot {
-            self.last_snapshot_time = Some(std::time::Instant::now());
+            self.last_snapshot_time = Some(Instant::now());
             Ok(Some(exchange_api::StreamData::OrderBook(self.snapshot())))
         } else {
             Ok(Some(exchange_api::StreamData::OrderBookDelta(
@@ -97,8 +102,8 @@ impl LocalOrderBook {
         let spread = best_ask - best_bid;
         let bid_depth: f64 = self.bids.values().sum();
         let ask_depth: f64 = self.asks.values().sum();
-        let time = DateTime::from_timestamp_millis(self.last_event_time as i64)
-            .unwrap_or_else(Utc::now);
+        let time =
+            DateTime::from_timestamp_millis(self.last_event_time as i64).unwrap_or_else(Utc::now);
 
         exchange_api::OrderBookDelta {
             exchange: "bybit".to_string(),
@@ -140,8 +145,8 @@ impl LocalOrderBook {
         let bid_depth: f64 = bids.iter().map(|l| l.size).sum();
         let ask_depth: f64 = asks.iter().map(|l| l.size).sum();
 
-        let time = DateTime::from_timestamp_millis(self.last_event_time as i64)
-            .unwrap_or_else(Utc::now);
+        let time =
+            DateTime::from_timestamp_millis(self.last_event_time as i64).unwrap_or_else(Utc::now);
 
         exchange_api::OrderBookSnapshot {
             exchange: "bybit".to_string(),
@@ -163,12 +168,14 @@ fn apply_side(
     levels: &[PriceLevel<'_>],
 ) -> Result<(), exchange_api::Error> {
     for level in levels {
-        let price = level.0.parse::<f64>().map_err(|e| {
-            exchange_api::Error::Exchange(format!("bad price '{}': {e}", level.0))
-        })?;
-        let qty = level.1.parse::<f64>().map_err(|e| {
-            exchange_api::Error::Exchange(format!("bad qty '{}': {e}", level.1))
-        })?;
+        let price = level
+            .0
+            .parse::<f64>()
+            .map_err(|e| exchange_api::Error::Exchange(format!("bad price '{}': {e}", level.0)))?;
+        let qty = level
+            .1
+            .parse::<f64>()
+            .map_err(|e| exchange_api::Error::Exchange(format!("bad qty '{}': {e}", level.1)))?;
         if qty == 0.0 {
             side.remove(&OrderedFloat(price));
         } else {

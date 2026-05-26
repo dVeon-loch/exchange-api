@@ -81,6 +81,7 @@ impl Default for ReconnectConfig {
 
 impl ReconnectConfig {
     /// Calculate the delay for the nth retry (0-indexed).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn delay(&self, retry: u32) -> Duration {
         let exp = 2u64.saturating_pow(retry);
         let base = self.initial_delay.as_millis() as u64 * exp;
